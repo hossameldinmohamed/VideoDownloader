@@ -1,0 +1,4 @@
+yt-dlp[default]>=2026.8.19
+playwright>=1.62
+fastapi>=0.141
+uvicorn[standard]>=0.54

@@ -1,0 +1,28 @@
+# Auto-merge Dependabot PRs once CI passes, so the project stays current
+# without manual work. Major-version bumps wait for a human review.
+# Requires: Settings → General → "Allow auto-merge", and a branch protection
+# rule on main that requires the CI checks.
+name: Dependabot auto-merge
+
+on: pull_request
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  automerge:
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - id: meta
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Enable auto-merge for minor and patch updates
+        if: steps.meta.outputs.update-type != 'version-update:semver-major' || contains(steps.meta.outputs.dependency-names, 'yt-dlp')
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Vidstash</title>
+  <meta name="description" content="Download whole YouTube channels and Facebook pages as MP4.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%235b5bf7'/%3E%3Cpath d='M16 8v11m0 0-4.5-4.5M16 19l4.5-4.5M9 23h14' stroke='white' stroke-width='2.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/app.css">
+  <script>
+    try { const t = localStorage.getItem("theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">
+        <svg viewBox="0 0 32 32"><rect width="32" height="32" rx="9"/><path d="M16 8v11m0 0-4.5-4.5M16 19l4.5-4.5M9 23h14"/></svg>
+      </span>
+      <span class="brand-name">Vidstash</span>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-view="download" role="tab">Download</button>
+      <button class="tab" data-view="library" role="tab">Library</button>
+      <button class="tab" data-view="settings" role="tab">Settings <span class="dot" id="settings-dot" hidden></span></button>
+    </nav>
+    <button class="icon-btn" id="theme-toggle" title="Toggle dark mode" aria-label="Toggle dark mode">
+      <svg viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>
+    </button>
+  </header>
+
+  <main>
+    <!-- ================================================= DOWNLOAD -->
+    <section class="view" id="view-download">
+      <div class="hero">
+        <h1>Save any channel or page as MP4</h1>
+        <p class="muted">Paste a YouTube or Facebook link, an <code>@handle</code> or a page name. Pick the videos you want — anything you already have is marked.</p>
+      </div>
+
+      <div class="card input-card">
+        <form class="input-wrap" id="find-form" autocomplete="off">
+          <span class="platform-chip" id="detect-chip" hidden></span>
+          <textarea id="input" rows="1" spellcheck="false"
+            placeholder="https://www.youtube.com/@channel   ·   facebook.com/page   ·   @handle"></textarea>
+          <button class="btn primary" id="btn-find" type="submit">
+            <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+            <span id="btn-find-label">Find videos</span>
+          </button>
+        </form>
+        <div class="input-row">
+          <div class="segmented" id="platform" role="radiogroup" aria-label="Platform">
+            <button data-value="auto" class="on">Auto-detect</button>
+            <button data-value="youtube"><span class="pdot yt"></span>YouTube</button>
+            <button data-value="facebook"><span class="pdot fb"></span>Facebook</button>
+          </div>
+          <div class="examples muted">
+            Try:
+            <button class="link" data-example="@LofiGirl">@LofiGirl</button>
+            <button class="link" data-example="https://www.youtube.com/@NASA">NASA</button>
+          </div>
+          <span class="kbd-hint muted"><kbd>↵</kbd> find · <kbd>⇧</kbd><kbd>↵</kbd> add another line</span>
+        </div>
+        <div class="ambiguous" id="ambiguous" hidden>
+          <span id="ambiguous-text"></span>
+          <button class="btn small" data-pick="youtube"><span class="pdot yt"></span>YouTube channel</button>
+          <button class="btn small" data-pick="facebook"><span class="pdot fb"></span>Facebook page</button>
+        </div>
+        <div class="multi-hint muted" id="multi-hint" hidden>
+          Several links: each one's <b>Videos</b> tab (or Reels) is downloaded in full — anything you already have is skipped.
+        </div>
+      </div>
+
+      <details class="card options" id="options-panel">
+        <summary>
+          <span class="summary-title">
+            <svg viewBox="0 0 24 24"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>
+            Options
+          </span>
+          <span class="option-chips" id="option-chips"></span>
+          <svg class="chev" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>
+        </summary>
+
+        <div class="options-grid">
+          <div class="field span2">
+            <label>Quality</label>
+            <div class="segmented wrap" id="opt-quality">
+              <button data-value="best">Best available</button>
+              <button data-value="2160">4K</button>
+              <button data-value="1440">1440p</button>
+              <button data-value="1080">1080p</button>
+              <button data-value="720">720p</button>
+              <button data-value="480">480p</button>
+              <button data-value="360">360p</button>
+            </div>
+            <small class="muted">Picks the highest resolution up to this limit.</small>
+          </div>
+
+          <div class="field span2">
+            <label>Format</label>
+            <div class="choice-cards" id="opt-format">
+              <button data-value="mp4"><b>MP4</b><span>Plays everywhere — QuickTime, iPhone, TV. Converts to H.264 when needed.</span></button>
+              <button data-value="original"><b>MP4 · original codec</b><span>No conversion. Smaller &amp; faster, but VP9/AV1 may not play in QuickTime.</span></button>
+              <button data-value="mp3"><b>MP3 audio</b><span>Audio only, best quality.</span></button>
+              <button data-value="m4a"><b>M4A audio</b><span>Audio only, no re-encoding.</span></button>
+            </div>
+          </div>
+
+          <div class="field">
+            <label>File names</label>
+            <div class="segmented" id="opt-naming">
+              <button data-value="number_title">001 - Title</button>
+              <button data-value="number">001</button>
+              <button data-value="title">Title</button>
+            </div>
+            <small class="muted">001 is the oldest upload; numbers never change between runs.</small>
+          </div>
+
+          <div class="field">
+            <label>Parallel downloads <output id="opt-workers-out">3</output></label>
+            <input type="range" min="1" max="8" id="opt-workers" value="3">
+            <small class="muted">3–5 is a good balance. More can trigger rate limits.</small>
+          </div>
+
+          <div class="field">
+            <label class="switch-row">
+              <span>Subtitles</span>
+              <input type="checkbox" class="switch" id="opt-subtitles">
+            </label>
+            <div class="sub-opts">
+              <input type="text" id="opt-sub-langs" class="input small" placeholder="en.*, ar" value="en.*">
+              <label class="check small"><input type="checkbox" id="opt-auto-subs"><span>Include auto-generated</span></label>
+            </div>
+          </div>
+
+          <div class="field">
+            <label>Extras</label>
+            <label class="check"><input type="checkbox" id="opt-thumb"><span>Embed thumbnail as cover art</span></label>
+            <label class="check"><input type="checkbox" id="opt-meta"><span>Embed title, date, chapters &amp; description</span></label>
+          </div>
+
+          <div class="field">
+            <label for="opt-cookies">Browser cookies <span class="muted">(YouTube)</span></label>
+            <select id="opt-cookies" class="input">
+              <option value="">Don't use</option>
+              <option value="chrome">Chrome</option>
+              <option value="safari">Safari</option>
+              <option value="firefox">Firefox</option>
+              <option value="edge">Edge</option>
+              <option value="brave">Brave</option>
+              <option value="opera">Opera</option>
+              <option value="vivaldi">Vivaldi</option>
+            </select>
+            <small class="muted">For members-only, age-restricted, or “confirm you’re not a bot”.</small>
+          </div>
+
+          <div class="field">
+            <label for="opt-rate">Speed limit <span class="muted">(per download)</span></label>
+            <input type="text" id="opt-rate" class="input" placeholder="Unlimited — e.g. 5M">
+          </div>
+
+          <div class="field span2">
+            <label>Save to</label>
+            <div class="inline">
+              <input type="text" id="opt-output" class="input mono grow">
+              <button class="btn small" id="btn-pick-folder">Choose…</button>
+              <button class="btn small ghost" id="btn-open-output">Open</button>
+            </div>
+            <small class="muted">Any folder on this computer, including external drives. Each channel/page gets its own folder inside, named after it.</small>
+          </div>
+        </div>
+        <div class="options-foot muted">
+          <span>Options are remembered automatically.</span>
+          <button class="link" id="btn-reset-options">Reset to defaults</button>
+        </div>
+      </details>
+
+      <div class="loading card" id="find-loading" hidden>
+        <div class="spinner"></div>
+        <div>
+          <b>Looking it up…</b>
+          <div class="muted">Checking which tabs this channel has.</div>
+        </div>
+      </div>
+
+      <!-- picker -->
+      <section class="card picker" id="picker" hidden>
+        <div class="picker-head">
+          <img class="avatar lg" id="pk-avatar" alt="" referrerpolicy="no-referrer" hidden>
+          <div class="avatar lg placeholder" id="pk-avatar-ph"></div>
+          <div class="grow">
+            <div class="pv-title"><span id="pk-title"></span><span class="platform-chip" id="pk-platform"></span></div>
+            <div class="muted small" id="pk-sub"></div>
+          </div>
+          <button class="icon-btn" id="pk-close" title="Close" aria-label="Close">
+            <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg>
+          </button>
+        </div>
+
+        <div class="pk-folder">
+          <svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>
+          <span class="muted">Saves to</span>
+          <span class="mono path" id="pk-folder-path"></span>
+          <button class="btn small" id="pk-folder-change">Change…</button>
+          <button class="btn small ghost" id="pk-folder-open">Open</button>
+        </div>
+
+        <div class="pk-notice" id="pk-notice" hidden>
+          <span>This video is part of a playlist.</span>
+          <button class="btn small" id="pk-open-playlist">Open the whole playlist</button>
+        </div>
+
+        <nav class="pk-tabs" id="pk-tabs" role="tablist"></nav>
+
+        <div class="pk-crumb" id="pk-crumb" hidden>
+          <button class="link" id="pk-back">‹ <span id="pk-back-label">All playlists</span></button>
+          <span class="muted">/</span>
+          <b id="pk-crumb-title"></b>
+        </div>
+
+        <div class="pv-toolbar" id="pk-toolbar">
+          <div class="search">
+            <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+            <input type="search" id="pk-search" placeholder="Filter by title…">
+          </div>
+          <div class="segmented" id="pk-sort">
+            <button data-value="newest" class="on">Newest first</button>
+            <button data-value="oldest">Oldest first</button>
+          </div>
+        </div>
+        <div class="pk-selectbar" id="pk-selectbar">
+          <span class="muted small" id="pk-stats"></span>
+          <div class="inline">
+            <span class="muted small">Select:</span>
+            <button class="chip-btn" id="pk-sel-new">New only</button>
+            <button class="chip-btn" id="pk-sel-all">All</button>
+            <button class="chip-btn" id="pk-sel-lists" hidden>Every playlist</button>
+            <button class="chip-btn" id="pk-sel-none">None</button>
+          </div>
+        </div>
+
+        <div class="grid" id="pk-grid"></div>
+        <div class="pk-state" id="pk-state" hidden></div>
+        <div class="sentinel" id="pk-sentinel"></div>
+
+        <div class="pv-foot">
+          <div class="grow">
+            <b id="pk-count">Nothing selected</b>
+            <div class="muted small" id="pk-breakdown">Tick the videos you want.</div>
+          </div>
+          <button class="link small" id="pk-opts" title="Change quality & format"></button>
+          <button class="btn primary" id="pk-download" disabled>
+            <svg viewBox="0 0 24 24"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 20h14"/></svg>
+            <span id="pk-download-label">Download</span>
+          </button>
+        </div>
+      </section>
+
+      <!-- jobs -->
+      <div class="section-head">
+        <h2>Queue &amp; history</h2>
+        <button class="link" id="btn-clear-jobs">Clear finished</button>
+      </div>
+      <div id="jobs"></div>
+      <div class="empty" id="jobs-empty">
+        <svg viewBox="0 0 24 24"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 20h14"/></svg>
+        <p>Nothing here yet. Paste a channel above to get started.</p>
+      </div>
+    </section>
+
+    <!-- ================================================= LIBRARY -->
+    <section class="view" id="view-library" hidden>
+      <div class="section-head">
+        <div>
+          <h2>Library</h2>
+          <div class="muted mono small" id="lib-root"></div>
+        </div>
+        <div class="inline">
+          <button class="btn small ghost" id="lib-refresh">Refresh</button>
+          <button class="btn small" id="lib-open-root">Open folder</button>
+        </div>
+      </div>
+      <div class="lib-grid" id="library"></div>
+      <div class="empty" id="lib-empty" hidden>
+        <svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>
+        <p>No downloads yet.</p>
+      </div>
+    </section>
+
+    <!-- ================================================= SETTINGS -->
+    <section class="view" id="view-settings" hidden>
+      <div class="section-head"><h2>Health &amp; updates</h2></div>
+      <div class="card">
+        <div class="health" id="health"></div>
+        <div class="update-row">
+          <div>
+            <b>Keep it working</b>
+            <div class="muted">YouTube and Facebook change often. yt-dlp ships fixes within days — updating is the cure for most “it stopped working” problems. The app also updates yt-dlp every time you launch it with <code>./app.sh</code>.</div>
+          </div>
+          <div class="inline">
+            <button class="btn" id="btn-update-ytdlp">Update yt-dlp</button>
+            <button class="btn ghost" id="btn-update-all">Update everything</button>
+          </div>
+        </div>
+        <pre class="log" id="update-log" hidden></pre>
+        <div class="restart-row" id="restart-row" hidden>
+          <span>Updated. Restart the app to load the new version.</span>
+          <button class="btn primary small" id="btn-restart">Restart now</button>
+        </div>
+      </div>
+
+      <div class="section-head"><h2>Facebook account</h2></div>
+      <div class="card fb-card">
+        <div class="grow">
+          <div class="inline"><span class="pdot fb"></span><b id="fb-status">Checking…</b></div>
+          <div class="muted" id="fb-message">Facebook only shows a page's full reel history to logged-in users. Your session stays on this computer in <code>.fbreels/</code>.</div>
+        </div>
+        <button class="btn" id="btn-fb-login">Connect Facebook</button>
+        <button class="btn ghost" id="btn-fb-logout" hidden>Disconnect</button>
+      </div>
+
+      <div class="section-head"><h2>App</h2></div>
+      <div class="card settings-list">
+        <label class="switch-row">
+          <span><b>Open the browser when the app starts</b></span>
+          <input type="checkbox" class="switch" id="set-open-browser">
+        </label>
+        <label class="switch-row">
+          <span><b>Notify me when a download finishes</b><br><small class="muted">Uses your browser's notifications.</small></span>
+          <input type="checkbox" class="switch" id="set-notify">
+        </label>
+      </div>
+
+      <p class="legal muted">Only download content you have the right to — your own channels and pages, or with the owner's permission. Respect YouTube's and Facebook's terms and copyright law.</p>
+      <p class="muted small" id="about"></p>
+    </section>
+  </main>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

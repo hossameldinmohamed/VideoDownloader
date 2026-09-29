@@ -1,0 +1,28 @@
+# Pull requests that bump every dependency to its latest release. CI runs the
+# full test suite on each one, and dependabot-automerge.yml merges them
+# automatically once CI is green.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: daily   # yt-dlp ships YouTube/Facebook fixes often — pick them up fast
+    versioning-strategy: increase   # raise the ">=" floors in requirements*.txt
+    open-pull-requests-limit: 10
+    groups:
+      yt-dlp:
+        patterns: ["yt-dlp*"]
+      python-deps:
+        patterns: ["*"]
+        exclude-patterns: ["yt-dlp*"]
+    labels: [dependencies]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ["*"]
+    labels: [dependencies]

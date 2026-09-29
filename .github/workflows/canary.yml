@@ -1,0 +1,56 @@
+# Scheduled health check against the *latest* release of every dependency and
+# the real YouTube site. Catches breakage (a YouTube change, an incompatible
+# library release) before you run into it, and opens an issue when it does.
+name: Canary
+
+on:
+  schedule:
+    - cron: "17 6 * * *"   # daily, 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  latest-deps:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"   # newest stable Python
+
+      - name: Install ffmpeg
+        run: brew install ffmpeg
+
+      - name: Install the newest release of everything
+        run: |
+          python -m pip install --upgrade pip
+          pip install --upgrade --upgrade-strategy eager -r requirements-dev.txt
+          pip list
+
+      - name: Unit & API tests
+        run: pytest -q
+
+      - name: Live YouTube download
+        id: live
+        # GitHub's datacenter IPs are sometimes challenged by YouTube, so a
+        # failure here is reported but only escalated after a retry.
+        run: LIVE=1 pytest -q tests/test_live.py || (sleep 60 && LIVE=1 pytest -q tests/test_live.py)
+
+      - name: Open an issue on failure
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          open=$(gh issue list --label canary --state open --json number --jq 'length')
+          if [ "$open" = "0" ]; then
+            gh label create canary --color B60205 --description "Scheduled canary failure" 2>/dev/null || true
+            gh issue create --label canary \
+              --title "Canary failing: latest dependencies or YouTube broke something" \
+              --body "The scheduled canary failed: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          Usually a newer yt-dlp fixes it (Dependabot opens that PR within a day). If the failure is in the unit tests, a dependency release changed behaviour."
+          fi
