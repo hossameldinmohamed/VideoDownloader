@@ -223,6 +223,20 @@ def api_job(job_id: str):
         return job.to_dict(items="all")
 
 
+@app.get("/api/jobs/{job_id}/file")
+def api_job_file(job_id: str, key: str):
+    """Stream one finished video so the browser can save it on the device it runs on."""
+    job = get_manager().get(job_id)
+    item = next((i for i in job.items if i["key"] == key), None) if job else None
+    if not item or item["status"] != "done" or not item.get("file"):
+        raise HTTPException(404, {"message": "That video isn't ready."})
+    p = (Path(item["out_dir"]) / item["file"]).resolve()
+    root = Path(job.output_dir).resolve()
+    if root not in p.parents or not p.is_file():
+        raise HTTPException(404, {"message": "That file isn't there anymore."})
+    return FileResponse(p, filename=p.name)
+
+
 @app.post("/api/jobs/{job_id}/cancel")
 def api_cancel(job_id: str):
     return {"ok": get_manager().cancel(job_id)}
@@ -557,6 +571,8 @@ def main(argv=None) -> int:
     parser.add_argument("--port", type=int, default=settings.get("port", 8787))
     parser.add_argument("--host", default="127.0.0.1", help="Default 127.0.0.1 (only this computer).")
     parser.add_argument("--no-browser", action="store_true", help="Don't open the browser automatically.")
+    parser.add_argument("--allow-host", action="append", default=[], metavar="NAME",
+                        help="Also accept requests for this host name, e.g. a `tailscale serve` HTTPS address.")
     args = parser.parse_args(argv)
 
     host, port = args.host, args.port
@@ -570,6 +586,7 @@ def main(argv=None) -> int:
             port += 1
 
     _allowed_hosts.update({f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}"})
+    _allowed_hosts.update(h.strip().lower() for h in args.allow_host if h.strip())
     if host not in ("127.0.0.1", "localhost", "::1"):
         _allowed_hosts.clear()  # explicit LAN mode: accept any Host header
         print("WARNING: listening beyond this computer — anyone on your network can use it.")

@@ -372,10 +372,13 @@ async function downloadMany(inputs) {
   const btn = $("#btn-find");
   btn.disabled = true;
   try {
+    let dest;
+    try { dest = await deviceDest(); } catch { return; } // folder picker closed: don't start
     const r = await api("POST", "/api/jobs", {
       inputs, platform: state.platform, options: { ...state.options, limit: null, tabs: ["videos"] },
       output_dir: $("#opt-output").value.trim(),
     });
+    trackDevice(r.jobs, dest);
     toast(`Queued ${r.jobs.length} downloads.`, "ok");
     inputEl.value = "";
     autoGrow(); detect();
@@ -750,10 +753,13 @@ $("#pk-download").addEventListener("click", async () => {
   const btn = $("#pk-download");
   btn.disabled = true;
   try {
-    await api("POST", "/api/jobs", {
+    let dest;
+    try { dest = await deviceDest(); } catch { return; } // folder picker closed: don't start
+    const r = await api("POST", "/api/jobs", {
       lookup_id: p.lk.lookup_id, selections, inputs: [p.input],
       options: { ...state.options, limit: null }, output_dir: $("#opt-output").value.trim(),
     });
+    trackDevice(r.jobs, dest);
     const n = selSize(() => true);
     for (const [k, s] of p.sel) s.forEach((v) => p.queued.add(`${k}|${v}`));
     p.sel.clear();
@@ -920,6 +926,8 @@ function jobHtml(j) {
   if (c.done && c.skipped) stats.push(html`<span>${c.skipped.toLocaleString()} already there</span>`);
   if (c.failed) stats.push(html`<span class="err"><b>${c.failed}</b> failed</span>`);
   if (j.speed) stats.push(html`<span>${fmtSpeed(j.speed)}</span>`);
+  const dv = device.jobs.get(j.id);
+  if (dv) stats.push(html`<span><b>${dv.saved.toLocaleString()}</b> copied to this device${dv.failed ? html` · <span class="err">${dv.failed} failed</span>` : ""}</span>`);
   if (c.total && active) stats.push(html`<span>${pct}%</span>`);
   stats.push(html`<span class="muted">${timeAgo(j.created)}</span>`);
 
@@ -1059,6 +1067,7 @@ async function poll() {
     }
     await Promise.all([...state.expanded].filter((id) => state.jobs.some((j) => j.id === id)).map(loadDetails));
     renderJobs();
+    if (device.jobs.size) syncDevice();
     if (state.jobs.some((j) => ACTIVE.has(j.status))) delay = 1000;
   } catch {
     delay = 3000;
@@ -1066,6 +1075,97 @@ async function poll() {
   pollTimer = setTimeout(poll, delay);
 }
 const pollNow = () => setTimeout(poll, 150);
+
+/* ================================================================ save to this device */
+
+// The app may run on another computer (e.g. reached over Tailscale). With this
+// on, every finished video is also copied to the device the browser runs on:
+// into a folder you pick (Chrome/Edge, over HTTPS or localhost) or, elsewhere,
+// into the browser's normal Downloads folder.
+const canPickFolder = "showDirectoryPicker" in window;
+const device = { dir: null, jobs: new Map(), queue: [], busy: false }; // jobs: id -> {dest, seen, sent, saved, failed}
+
+function renderDeviceHint() {
+  $("#opt-device-hint").textContent = canPickFolder
+    ? "When you press Download you pick a folder here, and each video is copied into it as it finishes. Keep this tab open."
+    : "Each finished video goes to this browser's Downloads folder. Keep this tab open. (Choosing a folder needs Chrome or Edge over HTTPS.)";
+}
+
+/** Where this download's copies go. Must run right after the click, before other awaits, or the picker is blocked. */
+async function deviceDest() {
+  if (!store.get("device", false)) return null;
+  if (!canPickFolder) return "downloads";
+  if (!device.dir) device.dir = await window.showDirectoryPicker({ id: "vidstash", mode: "readwrite" });
+  return device.dir;
+}
+
+function trackDevice(jobs, dest) {
+  if (!dest) return;
+  for (const j of jobs) device.jobs.set(j.id, { dest, seen: 0, sent: new Set(), saved: 0, failed: 0 });
+}
+
+async function syncDevice() {
+  for (const j of state.jobs) {
+    const t = device.jobs.get(j.id);
+    if (!t || j.counts.done <= t.seen) continue;
+    t.seen = j.counts.done;
+    try {
+      const full = await api("GET", `/api/jobs/${j.id}`);
+      for (const i of full.items) {
+        if (i.status !== "done" || !i.file || t.sent.has(i.key)) continue;
+        t.sent.add(i.key);
+        device.queue.push({ job: full, item: i, t });
+      }
+    } catch { t.seen = 0; }
+  }
+  pumpDevice();
+}
+
+async function pumpDevice() {
+  if (device.busy) return;
+  device.busy = true;
+  while (device.queue.length) {
+    const { job, item, t } = device.queue.shift();
+    try {
+      await saveToDevice(job, item, t.dest);
+      t.saved++;
+    } catch (e) {
+      t.failed++;
+      toast(`Couldn't copy “${item.title}” to this device: ${e.message}`, "err");
+    }
+    renderJobs();
+  }
+  device.busy = false;
+}
+
+const safeName = (s) => s.replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").replace(/[. ]+$/, "") || "_";
+
+async function saveToDevice(job, item, dest) {
+  const url = `/api/jobs/${job.id}/file?key=${encodeURIComponent(item.key)}`;
+  if (dest === "downloads") {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = item.file;
+    document.body.append(a);
+    a.click();
+    a.remove();
+    await new Promise((r) => setTimeout(r, 1000)); // browsers drop downloads fired back to back
+    return;
+  }
+  // keep the same <channel>/<tab>/ layout as on the server
+  let dir = dest;
+  const sub = item.out_dir.startsWith(job.output_dir) ? item.out_dir.slice(job.output_dir.length) : "";
+  for (const part of sub.split(/[\\/]/).filter(Boolean)) dir = await dir.getDirectoryHandle(safeName(part), { create: true });
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`download failed (${res.status})`);
+  const fh = await dir.getFileHandle(safeName(item.file), { create: true });
+  await res.body.pipeTo(await fh.createWritable());
+}
+
+$("#opt-device").addEventListener("change", (e) => {
+  store.set("device", e.target.checked);
+  if (!e.target.checked) device.dir = null;
+});
 
 /* ================================================================ library */
 
@@ -1211,6 +1311,8 @@ $("#set-notify").addEventListener("change", (e) => {
     state.options = { quality: "best", format: "mp4", tabs: ["videos"], naming: "number_title", limit: null, workers: 3, embed_thumbnail: true, embed_metadata: true };
   }
   $("#set-notify").checked = store.get("notify", true);
+  $("#opt-device").checked = store.get("device", false);
+  renderDeviceHint();
   applyOptionsToControls();
   autoGrow();
   showView(store.get("view", "download"));

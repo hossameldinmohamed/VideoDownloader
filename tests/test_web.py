@@ -1,3 +1,4 @@
+import os
 import time
 
 import pytest
@@ -170,3 +171,37 @@ def test_output_dir_must_be_writable(client, tmp_path):
         assert bad.status_code == 400 and "Can't save" in bad.json()["detail"]["message"]
     finally:
         locked.chmod(0o700)
+
+
+def test_job_file_streams_finished_videos_only(client, monkeypatch):
+    def fake_scan(target, options, reporter=None, headless=True):
+        return {"platform": "youtube", "kind": "channel", "title": "Chan", "avatar": None,
+                "groups": [{"key": "videos", "label": "Videos", "folder": ["Chan"], "single": False, "limit_from": "end",
+                            "items": [{"key": f"v{i}", "archive": f"youtube v{i}", "url": f"u{i}", "title": f"T{i}",
+                                       "thumbnail": None, "duration": 1} for i in range(2)]}]}
+
+    def fake_download(item, options, reporter, cookiefile):
+        if item["key"] == "v1":
+            reporter.update(item, status="failed", error="boom")
+            return False
+        name = f"{item['prefix']} - {item['title']}.mp4"
+        os.makedirs(item["out_dir"], exist_ok=True)
+        with open(os.path.join(item["out_dir"], name), "wb") as f:
+            f.write(b"video-bytes")
+        reporter.update(item, status="done", progress=1.0, file=name)
+        return True
+
+    monkeypatch.setattr(engine, "scan", fake_scan)
+    monkeypatch.setattr(engine, "_download_one", fake_download)
+    job_id = client.post("/api/jobs", json={"inputs": ["@chan"], "options": {}}, headers=H).json()["jobs"][0]["id"]
+    for _ in range(100):
+        if client.get(f"/api/jobs/{job_id}").json()["status"] not in ("queued", "scanning", "downloading"):
+            break
+        time.sleep(0.05)
+
+    r = client.get(f"/api/jobs/{job_id}/file", params={"key": "v0"})
+    assert r.status_code == 200 and r.content == b"video-bytes"
+    assert "attachment" in r.headers["content-disposition"]
+    assert client.get(f"/api/jobs/{job_id}/file", params={"key": "v1"}).status_code == 404
+    assert client.get(f"/api/jobs/{job_id}/file", params={"key": "nope"}).status_code == 404
+    assert client.get("/api/jobs/missing/file", params={"key": "v0"}).status_code == 404

@@ -114,3 +114,17 @@ Vercel runs code as short-lived serverless functions. They time out after minute
 ## Legal
 
 Only download content you have the right to: your own channels and pages, or with the owner's permission. Respect YouTube's and Facebook's terms of service and copyright law.
+
+## Use it from another device
+
+Keep Vidstash running on one computer at home and use it from anywhere with [Tailscale](https://tailscale.com) (free, private to your devices):
+
+1. Install Tailscale on the home computer and on each device you'll use, and sign in on all of them.
+2. On the home computer, start the app and give it an HTTPS address on your tailnet:
+   ```bash
+   tailscale serve --bg 8787
+   ./app.sh --no-browser --allow-host <computer-name>.<tailnet>.ts.net
+   ```
+3. On any of your devices, open `https://<computer-name>.<tailnet>.ts.net`.
+
+Under **Options**, turn on **Also save to the device I'm using**. When you press **Download**, Chrome and Edge ask you to pick a folder on that device, and each video is copied into it (in the same channel folders) as soon as it finishes. Safari and Firefox put the videos in the normal Downloads folder instead. Keep the tab open until the copies finish. The home computer keeps its own copy too.
