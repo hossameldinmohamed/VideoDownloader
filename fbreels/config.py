@@ -24,7 +24,7 @@ DEFAULT_OPTIONS = {
 }
 
 DEFAULT_SETTINGS = {
-    "output_dir": str(PROJECT_DIR / "downloads"),
+    "output_dir": str(Path.home() / "Downloads" / "Vidstash"),
     "options": DEFAULT_OPTIONS,
     "open_browser": True,
     "port": 8787,
