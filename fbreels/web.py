@@ -266,6 +266,10 @@ def api_save_settings(body: dict):
             probe.write_text("ok")
             probe.unlink()
         except OSError as e:
+            if os.environ.get("VERCEL"):
+                # this deployment's filesystem is read-only by design — no folder here will ever work
+                raise HTTPException(400, {"message": "This hosted preview can't save files anywhere. "
+                                                       "Run Vidstash on your own computer with ./app.sh to download to a real folder."}) from None
             raise HTTPException(400, {"message": f"Can't save to {out}: {e.strerror or e}. Pick another folder."}) from None
         data["output_dir"] = str(out)
     if "options" in body:
