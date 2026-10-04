@@ -106,6 +106,7 @@ const state = {
   preview: null,
   pendingAction: null,
   system: null,
+  mode: "local", // local | remote | preview — see applyMode()
 };
 
 const PLATFORM_NAME = { youtube: "YouTube", facebook: "Facebook" };
@@ -372,13 +373,12 @@ async function downloadMany(inputs) {
   const btn = $("#btn-find");
   btn.disabled = true;
   try {
-    let dest;
-    try { dest = await deviceDest(); } catch { return; } // folder picker closed: don't start
+    if (!(await prepareDevice())) return; // no folder on this device: don't start
     const r = await api("POST", "/api/jobs", {
       inputs, platform: state.platform, options: { ...state.options, limit: null, tabs: ["videos"] },
       output_dir: $("#opt-output").value.trim(),
     });
-    trackDevice(r.jobs, dest);
+    trackDevice(r.jobs);
     toast(`Queued ${r.jobs.length} downloads.`, "ok");
     inputEl.value = "";
     autoGrow(); detect();
@@ -734,8 +734,9 @@ function renderFooter() {
   const parts = [...p.sel].filter(([, s]) => s.size).map(([k, s]) => `${groupLabel(k)} ${s.size.toLocaleString()}`);
   $("#pk-count").textContent = total ? `${plural(total, "video")} selected` : "Nothing selected";
   $("#pk-breakdown").textContent = total ? parts.join(" · ") : "Tick the videos you want.";
-  $("#pk-download").disabled = total === 0;
-  $("#pk-download-label").textContent = total ? `Download ${total.toLocaleString()}` : "Download";
+  $("#pk-download").disabled = total === 0 || state.mode === "preview";
+  $("#pk-download-label").textContent = state.mode === "preview" ? "Can't download in the preview"
+    : total ? `Download ${total.toLocaleString()}` : "Download";
   const o = state.options;
   const q = o.quality === "best" ? "Best quality" : o.quality === "2160" ? "Up to 4K" : `Up to ${o.quality}p`;
   const f = { mp4: "MP4", original: "MP4 (original)", mp3: "MP3", m4a: "M4A" }[o.format];
@@ -753,13 +754,12 @@ $("#pk-download").addEventListener("click", async () => {
   const btn = $("#pk-download");
   btn.disabled = true;
   try {
-    let dest;
-    try { dest = await deviceDest(); } catch { return; } // folder picker closed: don't start
+    if (!(await prepareDevice())) return; // no folder on this device: don't start
     const r = await api("POST", "/api/jobs", {
       lookup_id: p.lk.lookup_id, selections, inputs: [p.input],
       options: { ...state.options, limit: null }, output_dir: $("#opt-output").value.trim(),
     });
-    trackDevice(r.jobs, dest);
+    trackDevice(r.jobs);
     const n = selSize(() => true);
     for (const [k, s] of p.sel) s.forEach((v) => p.queued.add(`${k}|${v}`));
     p.sel.clear();
@@ -886,7 +886,7 @@ function itemStatus(i) {
 
 function itemRow(i, withReveal = true) {
   const num = i.index != null ? `#${i.index}` : "";
-  const reveal = withReveal && i.file
+  const reveal = withReveal && i.file && state.mode === "local"
     ? html`<button class="icon-btn" title="Show in Finder" data-reveal="${i.out_dir}/${i.file}">${raw(ICON.reveal)}</button>`
     : html`<span></span>`;
   return html`<div class="item">
@@ -926,8 +926,7 @@ function jobHtml(j) {
   if (c.done && c.skipped) stats.push(html`<span>${c.skipped.toLocaleString()} already there</span>`);
   if (c.failed) stats.push(html`<span class="err"><b>${c.failed}</b> failed</span>`);
   if (j.speed) stats.push(html`<span>${fmtSpeed(j.speed)}</span>`);
-  const dv = device.jobs.get(j.id);
-  if (dv) stats.push(html`<span><b>${dv.saved.toLocaleString()}</b> copied to this device${dv.failed ? html` · <span class="err">${dv.failed} failed</span>` : ""}</span>`);
+  if (device.jobs.has(j.id)) stats.push(deviceStat(j));
   if (c.total && active) stats.push(html`<span>${pct}%</span>`);
   stats.push(html`<span class="muted">${timeAgo(j.created)}</span>`);
 
@@ -952,7 +951,7 @@ function jobHtml(j) {
     <div class="job-stats">
       ${stats}
       <div class="job-actions">
-        ${j.folder ? html`<button class="btn small ghost" data-act="open" data-path="${j.folder}">${raw(ICON.folder)} Open folder</button>` : ""}
+        ${j.folder && state.mode === "local" ? html`<button class="btn small ghost" data-act="open" data-path="${j.folder}">${raw(ICON.folder)} Open folder</button>` : ""}
         ${c.total ? html`<button class="btn small ghost" data-act="details">${raw(ICON.list)} ${expanded ? "Hide" : "Details"}</button>` : ""}
         ${canRetry ? html`<button class="btn small" data-act="retry">${raw(ICON.retry)} ${retryLabel}</button>` : ""}
         ${active ? html`<button class="btn small ghost danger" data-act="cancel">${raw(ICON.stop)} Cancel</button>` : ""}
@@ -1017,6 +1016,7 @@ $("#jobs").addEventListener("click", async (e) => {
   const act = btn.dataset.act;
   try {
     if (act === "open") await openPath(btn.dataset.path);
+    else if (act === "device-resume") await resumeDevice();
     else if (act === "details") {
       if (state.expanded.has(id)) { state.expanded.delete(id); state.details.delete(id); }
       else { state.expanded.add(id); state.details.set(id, { items: null, filter: "all", limit: 300 }); loadDetails(id); }
@@ -1076,35 +1076,103 @@ async function poll() {
 }
 const pollNow = () => setTimeout(poll, 150);
 
-/* ================================================================ save to this device */
+/* ================================================================ where it runs & save to this device */
 
-// The app may run on another computer (e.g. reached over Tailscale). With this
-// on, every finished video is also copied to the device the browser runs on:
-// into a folder you pick (Chrome/Edge, over HTTPS or localhost) or, elsewhere,
-// into the browser's normal Downloads folder.
+// "local":   the browser is on the computer running Vidstash — videos save straight into the Save to folder.
+// "remote":  Vidstash runs on another computer (e.g. at home, over Tailscale). Videos save there, and with
+//            "Copy to this device" each finished one is also copied here: into a folder you pick
+//            (Chrome/Edge over HTTPS) or into the browser's Downloads folder.
+// "preview": the read-only online deployment (Vercel), which can't download at all.
+const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
 const canPickFolder = "showDirectoryPicker" in window;
-const device = { dir: null, jobs: new Map(), queue: [], busy: false }; // jobs: id -> {dest, seen, sent, saved, failed}
 
-function renderDeviceHint() {
-  $("#opt-device-hint").textContent = canPickFolder
-    ? "When you press Download you pick a folder here, and each video is copied into it as it finishes. Keep this tab open."
-    : "Each finished video goes to this browser's Downloads folder. Keep this tab open. (Choosing a folder needs Chrome or Edge over HTTPS.)";
+function applyMode(preview) {
+  state.mode = preview ? "preview" : LOCAL_HOSTS.has(location.hostname) ? "local" : "remote";
+  const show = { "local-only": state.mode === "local", "remote-only": state.mode === "remote",
+    "preview-only": state.mode === "preview", "not-preview": state.mode !== "preview" };
+  for (const [cls, on] of Object.entries(show)) $$(`.${cls}`).forEach((el) => { el.hidden = !on; });
 }
 
-/** Where this download's copies go. Must run right after the click, before other awaits, or the picker is blocked. */
-async function deviceDest() {
-  if (!store.get("device", false)) return null;
-  if (!canPickFolder) return "downloads";
-  if (!device.dir) device.dir = await window.showDirectoryPicker({ id: "vidstash", mode: "readwrite" });
-  return device.dir;
+// the picked folder is kept in IndexedDB so you don't pick it again every visit
+const idb = {
+  open() {
+    return new Promise((ok, fail) => {
+      const req = indexedDB.open("vidstash", 1);
+      req.onupgradeneeded = () => req.result.createObjectStore("kv");
+      req.onsuccess = () => ok(req.result);
+      req.onerror = () => fail(req.error);
+    });
+  },
+  async run(mode, fn) {
+    const db = await this.open();
+    return new Promise((ok, fail) => {
+      const req = fn(db.transaction("kv", mode).objectStore("kv"));
+      req.onsuccess = () => ok(req.result);
+      req.onerror = () => fail(req.error);
+    });
+  },
+  get(k) { return this.run("readonly", (s) => s.get(k)).catch(() => undefined); },
+  set(k, v) { return this.run("readwrite", (s) => s.put(v, k)).catch(() => undefined); },
+};
+
+// jobs: id -> {seen, queued: Set (this page), done: Set (persisted), saved, failed}
+const device = { dir: null, paused: false, jobs: new Map(), queue: [], busy: false };
+
+const deviceOn = () => state.mode === "remote" && store.get("device", false);
+
+function saveDeviceJobs() {
+  store.set("deviceJobs", Object.fromEntries([...device.jobs].map(([id, t]) =>
+    [id, { done: [...t.done], saved: t.saved, failed: t.failed }])));
 }
 
-function trackDevice(jobs, dest) {
-  if (!dest) return;
-  for (const j of jobs) device.jobs.set(j.id, { dest, seen: 0, sent: new Set(), saved: 0, failed: 0 });
+function renderDevice() {
+  const on = store.get("device", false);
+  $$(".device-toggle").forEach((el) => { el.checked = on; });
+  $$(".device-pick").forEach((el) => { el.hidden = !on || !canPickFolder; el.textContent = device.dir ? "Change folder…" : "Choose folder…"; });
+  const where = !on ? "Videos stay only on the computer running Vidstash."
+    : !canPickFolder ? "Each finished video goes to this browser's Downloads folder. Keep this tab open. (To pick a folder, use Chrome or Edge over HTTPS.)"
+    : device.dir ? `Each finished video is copied into “${device.dir.name}” on this device. Keep this tab open.`
+    : "You'll pick a folder on this device when you press Download. Keep this tab open.";
+  $$(".device-where").forEach((el) => { el.textContent = where; });
+}
+
+async function pickDeviceFolder() {
+  try {
+    device.dir = await window.showDirectoryPicker({ id: "vidstash", mode: "readwrite", startIn: "downloads" });
+  } catch (e) {
+    if (e.name === "AbortError") {
+      toast("No folder chosen. Tip: make a new folder (e.g. “Vidstash”) inside Downloads and pick that — browsers won't let websites use Downloads, Desktop or your home folder itself.", "err");
+      return false;
+    }
+    throw e;
+  }
+  idb.set("deviceDir", device.dir);
+  device.paused = false;
+  renderDevice();
+  return true;
+}
+
+/** Get ready to copy this download to the device. Call straight from the click: browsers only show pickers then. */
+async function prepareDevice() {
+  if (!deviceOn() || !canPickFolder) return true;
+  if (!device.dir) return pickDeviceFolder();
+  if ((await device.dir.requestPermission({ mode: "readwrite" })) === "granted") { device.paused = false; return true; }
+  toast("This device's folder wasn't allowed — choose it again.", "err");
+  return pickDeviceFolder();
+}
+
+function trackDevice(jobs) {
+  if (!deviceOn()) return;
+  for (const j of jobs) device.jobs.set(j.id, { seen: 0, queued: new Set(), done: new Set(), saved: 0, failed: 0 });
+  saveDeviceJobs();
 }
 
 async function syncDevice() {
+  let changed = false;
+  for (const id of device.jobs.keys()) {
+    if (!state.jobs.some((j) => j.id === id)) { device.jobs.delete(id); changed = true; }
+  }
+  if (changed) saveDeviceJobs();
   for (const j of state.jobs) {
     const t = device.jobs.get(j.id);
     if (!t || j.counts.done <= t.seen) continue;
@@ -1112,8 +1180,8 @@ async function syncDevice() {
     try {
       const full = await api("GET", `/api/jobs/${j.id}`);
       for (const i of full.items) {
-        if (i.status !== "done" || !i.file || t.sent.has(i.key)) continue;
-        t.sent.add(i.key);
+        if (i.status !== "done" || !i.file || t.done.has(i.key) || t.queued.has(i.key)) continue;
+        t.queued.add(i.key);
         device.queue.push({ job: full, item: i, t });
       }
     } catch { t.seen = 0; }
@@ -1122,27 +1190,41 @@ async function syncDevice() {
 }
 
 async function pumpDevice() {
-  if (device.busy) return;
+  if (device.busy || device.paused) return;
   device.busy = true;
   while (device.queue.length) {
-    const { job, item, t } = device.queue.shift();
+    const next = device.queue[0];
+    if (canPickFolder && (!device.dir || (await device.dir.queryPermission({ mode: "readwrite" })) !== "granted")) {
+      device.paused = true; // after a reload the browser wants a click before we can write again
+      renderJobs();
+      break;
+    }
+    device.queue.shift();
+    const { job, item, t } = next;
     try {
-      await saveToDevice(job, item, t.dest);
+      await saveToDevice(job, item);
+      t.done.add(item.key);
       t.saved++;
     } catch (e) {
       t.failed++;
       toast(`Couldn't copy “${item.title}” to this device: ${e.message}`, "err");
     }
+    t.queued.delete(item.key);
+    saveDeviceJobs();
     renderJobs();
   }
   device.busy = false;
 }
 
+async function resumeDevice() {
+  if (await prepareDevice()) { device.paused = false; renderJobs(); pumpDevice(); }
+}
+
 const safeName = (s) => s.replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").replace(/[. ]+$/, "") || "_";
 
-async function saveToDevice(job, item, dest) {
+async function saveToDevice(job, item) {
   const url = `/api/jobs/${job.id}/file?key=${encodeURIComponent(item.key)}`;
-  if (dest === "downloads") {
+  if (!canPickFolder) {
     const a = document.createElement("a");
     a.href = url;
     a.download = item.file;
@@ -1152,8 +1234,8 @@ async function saveToDevice(job, item, dest) {
     await new Promise((r) => setTimeout(r, 1000)); // browsers drop downloads fired back to back
     return;
   }
-  // keep the same <channel>/<tab>/ layout as on the server
-  let dir = dest;
+  // keep the same <channel>/<tab>/ layout as on the host
+  let dir = device.dir;
   const sub = item.out_dir.startsWith(job.output_dir) ? item.out_dir.slice(job.output_dir.length) : "";
   for (const part of sub.split(/[\\/]/).filter(Boolean)) dir = await dir.getDirectoryHandle(safeName(part), { create: true });
   const res = await fetch(url);
@@ -1162,10 +1244,30 @@ async function saveToDevice(job, item, dest) {
   await res.body.pipeTo(await fh.createWritable());
 }
 
-$("#opt-device").addEventListener("change", (e) => {
+function deviceStat(j) {
+  const t = device.jobs.get(j.id);
+  if (!t) return "";
+  if (device.paused && (t.queued.size || device.queue.some((q) => q.t === t))) {
+    return html`<span class="err">Copying to this device is paused <button class="link" data-act="device-resume">Continue</button></span>`;
+  }
+  return html`<span><b>${t.saved.toLocaleString()}</b> copied to this device${t.failed ? html` · <span class="err">${t.failed} failed</span>` : ""}</span>`;
+}
+
+$$(".device-toggle").forEach((el) => el.addEventListener("change", (e) => {
   store.set("device", e.target.checked);
-  if (!e.target.checked) device.dir = null;
-});
+  renderDevice();
+  toast(e.target.checked ? "Saved — new downloads will also be copied to this device." : "Saved — videos will stay on the host only.", "ok");
+}));
+$$(".device-pick").forEach((el) => el.addEventListener("click", () => pickDeviceFolder().catch((e) => toast(e.message, "err"))));
+
+async function restoreDevice() {
+  if (state.mode !== "remote") return;
+  if (canPickFolder) device.dir = (await idb.get("deviceDir")) || null;
+  for (const [id, t] of Object.entries(store.get("deviceJobs", {}))) {
+    device.jobs.set(id, { seen: 0, queued: new Set(), done: new Set(t.done || []), saved: t.saved || 0, failed: t.failed || 0 });
+  }
+  renderDevice();
+}
 
 /* ================================================================ library */
 
@@ -1184,7 +1286,7 @@ async function loadLibrary() {
           </div>
         </div>
         <div class="inline">
-          <button class="btn small" data-lib="open">${raw(ICON.folder)} Open</button>
+          ${state.mode === "local" ? html`<button class="btn small" data-lib="open">${raw(ICON.folder)} Open</button>` : ""}
           <button class="btn small ghost" data-lib="files">${raw(ICON.list)} Files</button>
         </div>
         <div class="files" hidden></div>
@@ -1206,7 +1308,7 @@ $("#library").addEventListener("click", async (e) => {
   try {
     const r = await api("GET", `/api/library/files?path=${encodeURIComponent(card.dataset.path)}`);
     box.innerHTML = r.files.length
-      ? flat(r.files.map((f) => html`<div class="file"><span title="${f.name}">${f.name}</span><span class="muted small">${fmtBytes(f.size)}</span><button class="icon-btn" title="Show in Finder" data-reveal="${f.path}">${raw(ICON.reveal)}</button></div>`))
+      ? flat(r.files.map((f) => html`<div class="file"><span title="${f.name}">${f.name}</span><span class="muted small">${fmtBytes(f.size)}</span>${state.mode === "local" ? html`<button class="icon-btn" title="Show in Finder" data-reveal="${f.path}">${raw(ICON.reveal)}</button>` : ""}</div>`))
       : '<div class="muted small">No video files yet.</div>';
   } catch (err) { box.innerHTML = ""; toast(err.message, "err"); }
 });
@@ -1306,13 +1408,14 @@ $("#set-notify").addEventListener("change", (e) => {
     state.options = s.options;
     $("#opt-output").value = s.output_dir;
     $("#set-open-browser").checked = s.open_browser !== false;
+    applyMode(s.preview);
   } catch (e) {
+    applyMode(false);
     toast(`Couldn't load settings: ${e.message}`, "err");
     state.options = { quality: "best", format: "mp4", tabs: ["videos"], naming: "number_title", limit: null, workers: 3, embed_thumbnail: true, embed_metadata: true };
   }
   $("#set-notify").checked = store.get("notify", true);
-  $("#opt-device").checked = store.get("device", false);
-  renderDeviceHint();
+  await restoreDevice();
   applyOptionsToControls();
   autoGrow();
   showView(store.get("view", "download"));

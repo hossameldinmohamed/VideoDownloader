@@ -36,8 +36,8 @@ jobs:
 
       - name: Live YouTube download
         id: live
-        # GitHub's datacenter IPs are sometimes challenged by YouTube, so a
-        # failure here is reported but only escalated after a retry.
+        # GitHub's datacenter IPs are often challenged by YouTube's bot check;
+        # the test skips in that case, and other failures get one retry.
         run: LIVE=1 pytest -q tests/test_live.py || (sleep 60 && LIVE=1 pytest -q tests/test_live.py)
 
       - name: Open an issue on failure

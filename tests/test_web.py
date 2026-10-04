@@ -205,3 +205,11 @@ def test_job_file_streams_finished_videos_only(client, monkeypatch):
     assert client.get(f"/api/jobs/{job_id}/file", params={"key": "v1"}).status_code == 404
     assert client.get(f"/api/jobs/{job_id}/file", params={"key": "nope"}).status_code == 404
     assert client.get("/api/jobs/missing/file", params={"key": "v0"}).status_code == 404
+
+
+def test_vercel_preview_is_flagged_and_refuses_downloads(client, monkeypatch):
+    assert client.get("/api/settings").json()["preview"] is False
+    monkeypatch.setenv("VERCEL", "1")
+    assert client.get("/api/settings").json()["preview"] is True
+    r = client.post("/api/jobs", json={"inputs": ["@chan"]}, headers=H)
+    assert r.status_code == 400 and "preview" in r.json()["detail"]["message"]

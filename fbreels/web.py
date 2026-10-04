@@ -184,6 +184,9 @@ def api_lookup_group(lookup_id: str, body: GroupIn):
 
 @app.post("/api/jobs")
 def api_create_jobs(body: JobIn):
+    if os.environ.get("VERCEL"):
+        raise HTTPException(400, {"message": "This online preview can't download videos. "
+                                               "Run Vidstash on a computer with ./app.sh, then open it from any device."})
     m = get_manager()
     out_dir = _output_dir(body.output_dir)
     options = normalize_options(body.options)
@@ -266,6 +269,9 @@ def api_clear():
 def api_settings():
     s = load_settings()
     s["output_dir"] = _output_dir(s["output_dir"])
+    # Vercel's serverless functions can't keep a download running or write to disk,
+    # so the UI shows itself as a preview there instead of failing halfway.
+    s["preview"] = bool(os.environ.get("VERCEL"))
     return s
 
 
@@ -280,10 +286,6 @@ def api_save_settings(body: dict):
             probe.write_text("ok")
             probe.unlink()
         except OSError as e:
-            if os.environ.get("VERCEL"):
-                # this deployment's filesystem is read-only by design — no folder here will ever work
-                raise HTTPException(400, {"message": "This hosted preview can't save files anywhere. "
-                                                       "Run Vidstash on your own computer with ./app.sh to download to a real folder."}) from None
             raise HTTPException(400, {"message": f"Can't save to {out}: {e.strerror or e}. Pick another folder."}) from None
         data["output_dir"] = str(out)
     if "options" in body:

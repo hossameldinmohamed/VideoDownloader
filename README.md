@@ -127,4 +127,6 @@ Keep Vidstash running on one computer at home and use it from anywhere with [Tai
    ```
 3. On any of your devices, open `https://<computer-name>.<tailnet>.ts.net`.
 
-Under **Options**, turn on **Also save to the device I'm using**. When you press **Download**, Chrome and Edge ask you to pick a folder on that device, and each video is copied into it (in the same channel folders) as soon as it finishes. Safari and Firefox put the videos in the normal Downloads folder instead. Keep the tab open until the copies finish. The home computer keeps its own copy too.
+Under **Options** (or right above the video list), turn on **Copy to this device**. The first time you press **Download**, Chrome and Edge ask you to pick a folder on that device. After that, each video is copied into it, in the same channel folders, as soon as it finishes. The folder is remembered for next time. Pick a folder *inside* Downloads (e.g. a new `Vidstash` folder), because browsers won't let websites use Downloads, Desktop or your home folder itself. Safari and Firefox put the videos in the normal Downloads folder instead. Keep the tab open until the copies finish. The home computer keeps its own copy too.
+
+When you open Vidstash on the same computer it runs on (`http://127.0.0.1:8787`), this switch isn't shown: videos already save straight into your **Save to** folder.

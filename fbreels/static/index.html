@@ -37,6 +37,11 @@
         <p class="muted">Paste a YouTube or Facebook link, an <code>@handle</code> or a page name. Pick the videos you want — anything you already have is marked.</p>
       </div>
 
+      <div class="card preview-banner preview-only">
+        <b>This is an online preview, so it can't download videos.</b>
+        <p>Vidstash does the downloading on a computer you control. Run it on your computer with <code>./app.sh</code> and open <code>http://127.0.0.1:8787</code>: videos save straight into your folder. To use it from other devices, keep it running at home and follow “Use it from another device” in the README.</p>
+      </div>
+
       <div class="card input-card">
         <form class="input-wrap" id="find-form" autocomplete="off">
           <span class="platform-chip" id="detect-chip" hidden></span>
@@ -158,21 +163,25 @@
             <input type="text" id="opt-rate" class="input" placeholder="Unlimited — e.g. 5M">
           </div>
 
-          <div class="field span2">
-            <label>Save to</label>
+          <div class="field span2 not-preview">
+            <label><span class="local-only">Save to</span><span class="remote-only">Save on the computer running Vidstash</span></label>
             <div class="inline">
               <input type="text" id="opt-output" class="input mono grow">
-              <button class="btn small" id="btn-pick-folder">Choose…</button>
-              <button class="btn small ghost" id="btn-open-output">Open</button>
+              <button class="btn small local-only" id="btn-pick-folder">Choose…</button>
+              <button class="btn small ghost local-only" id="btn-open-output">Open</button>
             </div>
-            <small class="muted">Any folder on this computer, including external drives. Each channel/page gets its own folder inside, named after it.</small>
+            <small class="muted local-only">Any folder on this computer, including external drives. Each channel/page gets its own folder inside, named after it.</small>
+            <small class="muted remote-only">This folder is on the computer running Vidstash, not the device you're using now. Turn on “Copy to this device” below to get the videos here too.</small>
           </div>
 
-          <div class="field span2">
-            <label class="switch-row">
-              <span><b>Also save to the device I'm using</b><br><small class="muted" id="opt-device-hint"></small></span>
-              <input type="checkbox" class="switch" id="opt-device">
-            </label>
+          <div class="field span2 remote-only">
+            <div class="device-box">
+              <label class="switch-row">
+                <span><b>Copy to this device</b><br><small class="muted device-where"></small></span>
+                <input type="checkbox" class="switch device-toggle">
+              </label>
+              <button class="btn small device-pick">Choose folder…</button>
+            </div>
           </div>
         </div>
         <div class="options-foot muted">
@@ -203,12 +212,20 @@
           </button>
         </div>
 
-        <div class="pk-folder">
+        <div class="pk-folder not-preview">
           <svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>
-          <span class="muted">Saves to</span>
+          <span class="muted"><span class="local-only">Saves to</span><span class="remote-only">Saves on the host to</span></span>
           <span class="mono path" id="pk-folder-path"></span>
-          <button class="btn small" id="pk-folder-change">Change…</button>
-          <button class="btn small ghost" id="pk-folder-open">Open</button>
+          <button class="btn small local-only" id="pk-folder-change">Change…</button>
+          <button class="btn small ghost local-only" id="pk-folder-open">Open</button>
+        </div>
+
+        <div class="device-box pk-device remote-only">
+          <label class="switch-row">
+            <span><b>Copy to this device</b><br><small class="muted device-where"></small></span>
+            <input type="checkbox" class="switch device-toggle">
+          </label>
+          <button class="btn small device-pick">Choose folder…</button>
         </div>
 
         <div class="pk-notice" id="pk-notice" hidden>
@@ -283,7 +300,7 @@
         </div>
         <div class="inline">
           <button class="btn small ghost" id="lib-refresh">Refresh</button>
-          <button class="btn small" id="lib-open-root">Open folder</button>
+          <button class="btn small local-only" id="lib-open-root">Open folder</button>
         </div>
       </div>
       <div class="lib-grid" id="library"></div>
