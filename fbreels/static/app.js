@@ -175,7 +175,9 @@ const saveOptions = debounce(async () => {
 function setOption(k, v) {
   state.options[k] = v;
   renderOptionChips();
-  if (state.picker) renderFooter();
+  // Sizes depend on quality and format: show (and fetch) the new ones.
+  if (state.picker && (k === "format" || k === "quality")) rerenderKeepingPlace();
+  else if (state.picker) renderFooter();
   saveOptions();
 }
 
@@ -408,6 +410,7 @@ async function openLookup(input) {
     state.picker = {
       input, lk, groups: new Map(), sel: new Map(), queued: new Set(), errors: new Map(),
       view: null, search: "", sort: "newest", list: [], shown: 0, autoPicked: false, loading: new Set(),
+      info: new Map(), extra: new Map(), detailQueue: [], detailBusy: 0,
     };
     renderPickerHead();
     $("#picker").hidden = false;
@@ -554,6 +557,7 @@ function renderView() {
   $("#pk-sel-lists").hidden = !isColl;
   $("#pk-search").placeholder = isColl ? `Filter ${g.label.toLowerCase()}…` : "Filter by title…";
 
+  cardObserver.disconnect();
   grid.innerHTML = "";
   p.list = [];
   p.shown = 0;
@@ -613,18 +617,124 @@ function videoCard(i, key) {
   if (i.unavailable) badge = html`<span class="badge off">${i.unavailable}</span>`;
   else if (queued) badge = html`<span class="badge queued">In queue</span>`;
   else if (i.downloaded) badge = html`<span class="badge got">${raw(ICON.check)} Downloaded</span>`;
-  const meta = [i.views ? `${compact.format(i.views)} views` : ""].filter(Boolean).join(" · ");
+  const { duration, title, size } = cardDetails(i);
+  const meta = [i.views ? `${compact.format(i.views)} views` : "", size].filter(Boolean).join(" · ");
   return html`<div class="vcard ${sel ? "sel" : ""} ${i.downloaded ? "got" : ""} ${i.unavailable ? "off" : ""} ${badge ? "has-badge" : ""}"
-      data-key="${i.key}" title="${i.title}" role="checkbox" aria-checked="${sel}">
+      data-key="${i.key}" title="${title}" role="checkbox" aria-checked="${sel}">
     <div class="thumb">${thumb}
       ${i.number != null && i.thumbnail ? html`<span class="badge num">#${i.number}</span>` : ""}
-      ${i.duration ? html`<span class="badge dur">${fmtDur(i.duration)}</span>` : ""}
+      ${duration ? html`<span class="badge dur">${fmtDur(duration)}</span>` : ""}
       ${badge}
     </div>
     <span class="tick">${raw(ICON.check)}</span>
-    <div class="vtitle">${i.title}</div>
+    <div class="vtitle">${title}</div>
     ${meta ? html`<div class="vmeta">${meta}</div>` : ""}
   </div>`;
+}
+
+/* ---- length & download size: one request per video, so they're fetched in
+   the background for the cards on screen and for what's ticked. */
+
+const DETAIL_WORKERS = 3;
+const MAX_SIZED_SELECTION = 300;
+const optsSig = () => `${state.options.format}|${state.options.quality}`;
+const sizeOf = (key) => {
+  const d = state.picker.info.get(`${optsSig()}|${key}`);
+  return d && typeof d === "object" ? d : null;
+};
+
+function cardDetails(i) {
+  const p = state.picker;
+  const x = p.extra.get(i.key);
+  const d = sizeOf(i.key);
+  return {
+    duration: i.duration || x?.duration,
+    // Facebook's Reels tab has no captions; the video page has the real title.
+    title: (x?.title && /^Reel \d+$/.test(i.title)) ? x.title : i.title,
+    size: d?.size ? `${d.size_exact ? "" : "≈"}${fmtBytes(d.size)}` : "",
+  };
+}
+
+function wantDetails(keys, front = false) {
+  const p = state.picker;
+  const sig = optsSig();
+  const queued = new Set(p.detailQueue);
+  const fresh = keys.filter((k) => !p.info.has(`${sig}|${k}`) && !queued.has(k));
+  if (!fresh.length) return;
+  p.detailQueue = front ? [...fresh, ...p.detailQueue] : [...p.detailQueue, ...fresh];
+  pumpDetails();
+}
+
+function pumpDetails() {
+  const p = state.picker;
+  while (p && p.detailBusy < DETAIL_WORKERS && p.detailQueue.length) {
+    const key = p.detailQueue.shift();
+    const id = `${optsSig()}|${key}`;
+    if (p.info.has(id)) continue;
+    p.info.set(id, "busy");
+    p.detailBusy++;
+    api("POST", `/api/lookup/${p.lk.lookup_id}/details`, { key, options: state.options })
+      .then((d) => { p.info.set(id, d); p.extra.set(key, d); })
+      .catch(() => p.info.set(id, "err"))
+      .finally(() => {
+        p.detailBusy--;
+        if (state.picker !== p) return;
+        updateCard(key);
+        renderFooter();
+        pumpDetails();
+      });
+  }
+}
+
+function updateCard(key) {
+  const p = state.picker;
+  const card = $(`#pk-grid .vcard[data-key="${CSS.escape(key)}"]`);
+  const item = card && p.list.find((i) => i.key === key);
+  if (!item) return;
+  const tmp = document.createElement("div");
+  tmp.innerHTML = flat(videoCard(item, p.view));
+  const fresh = tmp.firstElementChild;
+  card.replaceWith(fresh);
+  cardObserver.observe(fresh);
+}
+
+const cardObserver = new IntersectionObserver((entries) => {
+  const p = state.picker;
+  if (!p) return;
+  const sel = selFor(p.view);
+  const show = [];
+  const hide = new Set();
+  entries.forEach((e) => {
+    const c = e.target;
+    if (c.classList.contains("off") || c.classList.contains("got")) return;
+    if (e.isIntersecting) show.push(c.dataset.key);
+    else if (!sel.has(c.dataset.key)) hide.add(c.dataset.key);
+  });
+  // Scrolled past before its turn came: don't spend a request on it.
+  if (hide.size) p.detailQueue = p.detailQueue.filter((k) => !hide.has(k));
+  wantDetails(show, true);
+}, { rootMargin: "200px" });
+
+/** Total length and size of what's ticked: {secs, bytes, approx, unsized, measuring, tooMany}. */
+function selectionDetails() {
+  const p = state.picker;
+  const t = { secs: 0, bytes: 0, approx: false, unsized: 0, measuring: 0, tooMany: false };
+  const keys = [];
+  for (const [k, s] of p.sel) {
+    if (!s.size) continue;
+    const g = p.groups.get(k);
+    const byKey = new Map((g?.items || []).map((i) => [i.key, i]));
+    for (const key of s) {
+      keys.push(key);
+      t.secs += byKey.get(key)?.duration || p.extra.get(key)?.duration || 0;
+      const d = sizeOf(key);
+      if (d?.size) { t.bytes += d.size; t.approx ||= !d.size_exact; } else t.unsized++;
+      if (p.info.get(`${optsSig()}|${key}`) === "busy" || p.detailQueue.includes(key)) t.measuring++;
+    }
+  }
+  if (keys.length > MAX_SIZED_SELECTION) t.tooMany = true;
+  else wantDetails(keys);
+  return t;
 }
 
 function collectionCard(c, tab) {
@@ -656,7 +766,9 @@ function appendCards() {
   const next = p.list.slice(p.shown, p.shown + PAGE);
   p.shown += next.length;
   const cards = g.type === "collections" ? next.map((c) => collectionCard(c, p.view)) : next.map((i) => videoCard(i, p.view));
-  $("#pk-grid").insertAdjacentHTML("beforeend", flat(cards));
+  const grid = $("#pk-grid");
+  grid.insertAdjacentHTML("beforeend", flat(cards));
+  if (g.type !== "collections") [...grid.children].slice(-next.length).forEach((c) => cardObserver.observe(c));
 }
 
 new IntersectionObserver((entries) => {
@@ -732,7 +844,17 @@ function renderFooter() {
   if (!p) return;
   const total = selSize(() => true);
   const parts = [...p.sel].filter(([, s]) => s.size).map(([k, s]) => `${groupLabel(k)} ${s.size.toLocaleString()}`);
-  $("#pk-count").textContent = total ? `${plural(total, "video")} selected` : "Nothing selected";
+  let summary = "";
+  if (total) {
+    const t = selectionDetails();
+    const known = total - t.unsized;
+    if (t.secs) parts.push(`${fmtDur(t.secs)} total`);
+    if (t.tooMany) parts.push(`size: tick ${MAX_SIZED_SELECTION} or fewer to measure it`);
+    else if (t.measuring) parts.push(`measuring size… ${known} of ${total}`);
+    else if (t.unsized) parts.push(`size unknown for ${t.unsized}`);
+    if (t.bytes) summary = ` · ${t.approx || t.unsized ? "≈" : ""}${fmtBytes(t.bytes)}${t.unsized ? "+" : ""}`;
+  }
+  $("#pk-count").textContent = total ? `${plural(total, "video")} selected${summary}` : "Nothing selected";
   $("#pk-breakdown").textContent = total ? parts.join(" · ") : "Tick the videos you want.";
   $("#pk-download").disabled = total === 0 || state.mode === "preview";
   $("#pk-download-label").textContent = state.mode === "preview" ? "Can't download in the preview"

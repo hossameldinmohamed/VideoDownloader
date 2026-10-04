@@ -60,6 +60,10 @@ def _sanitize_name(name: str) -> str:
     if not name:
         return ""
     name = name.replace(" | Facebook", "").strip()
+    # document.title is prefixed with the unread-notification count, "(2) …".
+    name = re.sub(r"^\(\d+\+?\)\s*", "", name)
+    if name.lower() == "facebook":
+        return ""
     name = re.sub(r'[\/:*?"<>|\\]', "_", name)
     name = re.sub(r"\s+", " ", name).strip()
     return name[:80]
@@ -148,16 +152,32 @@ def export_cookies_txt() -> Path:
     return COOKIES_FILE
 
 
-def collect_reel_urls(page_url: str, limit=None, headless: bool = True, on_status=print, cancel=None):
-    """Return (page_name, [reel_urls]) for every reel found on the page's Reels tab.
+def parse_views(text: str):
+    """"12K" → 12000, "1.2M" → 1200000, "845" → 845; None if it isn't a count."""
+    m = re.fullmatch(r"([\d.,]+)\s*([KMB]?)", (text or "").strip(), re.IGNORECASE)
+    if not m:
+        return None
+    number, suffix = m.groups()
+    if suffix:
+        try:
+            value = float(number.replace(",", "."))
+        except ValueError:
+            return None
+        return int(value * {"k": 1e3, "m": 1e6, "b": 1e9}[suffix.lower()])
+    digits = re.sub(r"[.,]", "", number)
+    return int(digits) if digits else None
 
-    reel_urls preserves the order Facebook displays them in (newest first).
+
+def collect_reels(page_url: str, limit=None, headless: bool = True, on_status=print, cancel=None):
+    """Return (page_name, reels) for every reel found on the page's Reels tab,
+    where each reel is {"url", "thumbnail", "views"} (the last two may be None).
+
+    reels preserves the order Facebook displays them in (newest first).
     `cancel` is an optional callable returning True to stop scrolling early.
     """
     ensure_logged_in(on_status)
 
-    seen = set()
-    ordered = []
+    reels = {}  # url -> reel dict, in insertion (display) order
     page_name = ""
 
     with sync_playwright() as p:
@@ -185,26 +205,42 @@ def collect_reel_urls(page_url: str, limit=None, headless: bool = True, on_statu
             """() => {
                 const og = document.querySelector('meta[property="og:title"]');
                 if (og && og.content) return og.content;
+                const h1 = document.querySelector('[role="main"] h1') || document.querySelector('h1');
+                if (h1 && h1.innerText.trim()) return h1.innerText.trim();
                 return document.title || "";
             }"""
         )
 
         def collect_visible():
-            hrefs = page.eval_on_selector_all("a", "els => els.map(e => e.href)")
+            # Each reel tile is a link wrapping its cover image and a view count.
+            tiles = page.eval_on_selector_all(
+                "a[href*='/reel/']",
+                """els => els.map(a => {
+                    const img = a.querySelector('img');
+                    const src = img && (img.currentSrc || img.src) || '';
+                    return {href: a.href, img: src.startsWith('http') ? src : null, text: a.innerText || ''};
+                })""",
+            )
             gained = 0
-            for href in hrefs:
-                m = REEL_URL_RE.match(href.split("?")[0])
-                if m:
-                    url = f"https://www.facebook.com/reel/{m.group(1)}"
-                    if url not in seen:
-                        seen.add(url)
-                        ordered.append(url)
-                        gained += 1
+            for tile in tiles:
+                m = REEL_URL_RE.match(tile["href"].split("?")[0])
+                if not m:
+                    continue
+                url = f"https://www.facebook.com/reel/{m.group(1)}"
+                views = next(filter(None, map(parse_views, tile["text"].splitlines())), None)
+                reel = reels.get(url)
+                if reel is None:
+                    reels[url] = {"url": url, "thumbnail": tile["img"], "views": views}
+                    gained += 1
+                else:
+                    # Images load lazily; fill in what wasn't there on first sight.
+                    reel["thumbnail"] = reel["thumbnail"] or tile["img"]
+                    reel["views"] = reel["views"] or views
             return gained
 
         collect_visible()
         idle_rounds = 0
-        while not (limit and len(ordered) >= limit):
+        while not (limit and len(reels) >= limit):
             if cancel and cancel():
                 browser.close()
                 raise Cancelled()
@@ -212,13 +248,13 @@ def collect_reel_urls(page_url: str, limit=None, headless: bool = True, on_statu
             page.wait_for_timeout(int(SCROLL_PAUSE_SECONDS * 1000))
             gained = collect_visible()
             if gained:
-                on_status(f"Scrolling the Reels tab… {len(ordered)} reels found so far")
+                on_status(f"Scrolling the Reels tab… {len(reels)} reels found so far")
             idle_rounds = 0 if gained else idle_rounds + 1
             if idle_rounds >= MAX_IDLE_SCROLLS:
                 break
 
         browser.close()
 
-    urls = ordered[:limit] if limit else ordered
+    found = list(reels.values())
     name = _sanitize_name(page_name) or fallback_identifier
-    return name, urls
+    return name, found[:limit] if limit else found

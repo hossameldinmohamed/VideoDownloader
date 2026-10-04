@@ -213,3 +213,41 @@ def test_vercel_preview_is_flagged_and_refuses_downloads(client, monkeypatch):
     assert client.get("/api/settings").json()["preview"] is True
     r = client.post("/api/jobs", json={"inputs": ["@chan"]}, headers=H)
     assert r.status_code == 400 and "preview" in r.json()["detail"]["message"]
+
+
+def test_item_details(client, monkeypatch):
+    def fake_lookup(target, options, reporter=None):
+        return {"platform": "facebook", "kind": "page", "url": target.url, "title": "Page", "avatar": None,
+                "subtitle": None, "subscribers": None, "folder": ["Page"], "groups": {},
+                "tabs": [{"key": "reels", "label": "Reels", "type": "videos"}],
+                "default_tab": "reels", "target": target.to_dict()}
+
+    def fake_load(lk, key, options, reporter=None, headless=True):
+        g = {"key": key, "label": "Reels", "type": "shorts", "folder": ["Page"], "single": False,
+             "limit_from": "start", "chrono": "newest_first",
+             "items": [{"key": "r1", "archive": "facebook 1", "url": "https://www.facebook.com/reel/1",
+                        "title": "Reel 1", "thumbnail": None, "duration": None, "views": None, "unavailable": None}]}
+        lk["groups"][key] = g
+        return g
+
+    calls = []
+
+    def fake_details(url, platform, options):
+        calls.append((url, platform, options["format"]))
+        return {"duration": 12, "title": "Hello", "size": 1000, "size_exact": True}
+
+    monkeypatch.setattr(web, "_details_cache", {})
+    monkeypatch.setattr(engine, "lookup", fake_lookup)
+    monkeypatch.setattr(engine, "load_group", fake_load)
+    monkeypatch.setattr(engine, "item_details", fake_details)
+
+    lid = client.post("/api/lookup", json={"input": "somepage", "platform": "facebook"}, headers=H).json()["lookup_id"]
+    client.post(f"/api/lookup/{lid}/group", json={"key": "reels"}, headers=H)
+    url = f"/api/lookup/{lid}/details"
+    assert client.post(url, json={"key": "nope"}, headers=H).status_code == 404
+    r = client.post(url, json={"key": "r1"}, headers=H)
+    assert r.status_code == 200 and r.json()["size"] == 1000
+    client.post(url, json={"key": "r1"}, headers=H)  # cached
+    client.post(url, json={"key": "r1", "options": {"format": "mp3"}}, headers=H)  # different format
+    assert calls == [("https://www.facebook.com/reel/1", "facebook", "mp4"),
+                     ("https://www.facebook.com/reel/1", "facebook", "mp3")]

@@ -330,10 +330,15 @@ def load_group(lk: dict, key: str, options: dict, reporter: Reporter | None = No
     return g
 
 
+_fb_cookie_lock = threading.Lock()
+
+
 def _fb_cookiefile():
     from . import scraper
 
-    return scraper.export_cookies_txt() if scraper.has_saved_session() else None
+    # Several detail lookups run at once; don't let one read a half-written file.
+    with _fb_cookie_lock:
+        return scraper.export_cookies_txt() if scraper.has_saved_session() else None
 
 
 def _scan_facebook_video(url: str, options: dict) -> dict:
@@ -353,7 +358,7 @@ def _scan_facebook_page(url: str, options: dict, reporter: Reporter, headless: b
 
     reporter.status("Opening the page's Reels tab…")
     try:
-        name, urls = scraper.collect_reel_urls(
+        name, reels = scraper.collect_reels(
             url, limit=options.get("limit"), headless=headless,
             on_status=reporter.status, cancel=reporter.cancelled,
         )
@@ -363,10 +368,12 @@ def _scan_facebook_page(url: str, options: dict, reporter: Reporter, headless: b
         raise Cancelled() from None
 
     items = []
-    for u in urls:
+    for reel in reels:
+        u = reel["url"]
         rid = u.rstrip("/").rsplit("/", 1)[-1]
         items.append({"key": u, "archive": f"facebook {rid}", "url": u, "title": f"Reel {rid}",
-                      "thumbnail": None, "duration": None, "views": None, "unavailable": None})
+                      "thumbnail": reel["thumbnail"], "duration": None, "views": reel["views"],
+                      "unavailable": None})
     # Facebook lists newest first; numbers are handed out in that order.
     return _video_group("reels", "Reels", [sanitize_folder(name)], items, kind="shorts",
                         limit_from="start", chrono="newest_first")
@@ -673,6 +680,42 @@ def _format_opts(options: dict) -> dict:
         "format_sort": [res, "fps", "hdr:sdr", "vcodec:h264", "acodec:aac"],
         "merge_output_format": "mp4",
     }
+
+
+def _format_size(f: dict, duration) -> tuple[int | None, bool]:
+    """(bytes, exact) for one format; estimated from bitrate when YouTube
+    doesn't say."""
+    if f.get("filesize"):
+        return f["filesize"], True
+    if f.get("filesize_approx"):
+        return f["filesize_approx"], False
+    if f.get("tbr") and duration:
+        return int(f["tbr"] * 1000 / 8 * duration), False
+    return None, False
+
+
+def item_details(url: str, platform: str, options: dict) -> dict:
+    """Length, title and expected download size of one video with the current
+    quality/format options — the same format pick a download would make."""
+    cookiefile = _fb_cookiefile() if platform == "facebook" else None
+    opts = {**base_opts(options, platform, cookiefile), **_format_opts(options)}
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+    duration = info.get("duration")
+    size, exact = None, True
+    for f in info.get("requested_formats") or [info]:
+        n, ok = _format_size(f, duration)
+        if n is None:
+            size, exact = None, False
+            break
+        size, exact = (size or 0) + n, exact and ok
+    # Converting (to MP3, or non-H.264 video to H.264) changes the final size.
+    vcodec = str(info.get("vcodec") or "")
+    if options["format"] == "mp3" or (options["format"] == "mp4" and vcodec not in ("", "none")
+                                      and not vcodec.startswith(("avc", "h264"))):
+        exact = False
+    return {"duration": duration, "title": info.get("title"), "size": size,
+            "size_exact": exact if size else False}
 
 
 def _outtmpl(item: dict, options: dict) -> str:

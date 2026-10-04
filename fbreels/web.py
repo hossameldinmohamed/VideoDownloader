@@ -80,6 +80,11 @@ class GroupIn(BaseModel):
     options: dict | None = None
 
 
+class DetailsIn(BaseModel):
+    key: str
+    options: dict | None = None
+
+
 class JobIn(BaseModel):
     inputs: list[str] = []
     platform: str = "auto"
@@ -180,6 +185,31 @@ def api_lookup_group(lookup_id: str, body: GroupIn):
         raise HTTPException(422, {"message": engine.clean_error(e)}) from None
     return {"group": engine.annotate_group(group, options, _output_dir()),
             "lookup": _public_lookup(lookup_id, lk)}
+
+
+_details_cache: dict[tuple, dict] = {}
+
+
+@app.post("/api/lookup/{lookup_id}/details")
+def api_item_details(lookup_id: str, body: DetailsIn):
+    """Length and download size of one listed video (fetched on demand: it
+    takes a request per video)."""
+    lk = _get_lookup(lookup_id)["lk"]
+    item = next((i for g in lk["groups"].values() if g.get("type") != "collections"
+                 for i in g["items"] if i["key"] == body.key), None)
+    if item is None:
+        raise HTTPException(404, {"message": "That video isn't in this list."})
+    options = normalize_options(body.options)
+    cache_key = (item["url"], options["format"], options["quality"])
+    if cache_key not in _details_cache:
+        try:
+            details = engine.item_details(item["url"], lk["platform"], options)
+        except Exception as e:
+            raise HTTPException(422, {"message": engine.clean_error(e)}) from None
+        if len(_details_cache) > 5000:
+            _details_cache.clear()
+        _details_cache[cache_key] = details
+    return _details_cache[cache_key]
 
 
 @app.post("/api/jobs")
