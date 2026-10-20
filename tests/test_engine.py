@@ -191,3 +191,11 @@ def test_yt_entries_marks_live_and_upcoming():
     ]}
     got = [(e["title"], e["unavailable"]) for e in engine._yt_entries(info)]
     assert got == [("Old stream", None), ("On air", "Live now"), ("Soon", "Upcoming")]
+
+
+def test_entry_date():
+    assert engine._entry_date({"timestamp": 1700000000.0}) == 1700000000
+    assert engine._entry_date({"upload_date": "20240102"}) == 1704153600
+    assert engine._entry_date({"release_timestamp": 5}) == 5
+    assert engine._entry_date({"upload_date": "bad"}) is None
+    assert engine._entry_date({}) is None

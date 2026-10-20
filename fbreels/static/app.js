@@ -67,6 +67,16 @@ function timeAgo(t) {
   if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
   return new Date(t * 1000).toLocaleDateString();
 }
+const DAY = 86400;
+const dateFmt = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short", year: "numeric" });
+/** When a video was published. Channel listings only know "3 weeks ago", so those stay relative. */
+function fmtPublished(t, exact) {
+  if (!t) return "";
+  if (exact) return dateFmt.format(new Date(t * 1000));
+  const d = Math.max(0, Date.now() / 1000 - t) / DAY;
+  const ago = (n, w) => `${plural(Math.max(1, Math.floor(n)), w)} ago`;
+  return d < 1 ? "today" : d < 7 ? ago(d, "day") : d < 30 ? ago(d / 7, "week") : d < 365 ? ago(d / 30, "month") : ago(d / 365, "year");
+}
 const plural = (n, w) => `${n.toLocaleString()} ${w}${n === 1 ? "" : "s"}`;
 
 function toast(msg, kind = "") {
@@ -379,6 +389,7 @@ async function downloadMany(inputs) {
     const r = await api("POST", "/api/jobs", {
       inputs, platform: state.platform, options: { ...state.options, limit: null, tabs: ["videos"] },
       output_dir: $("#opt-output").value.trim(),
+      direct: directOn(),
     });
     trackDevice(r.jobs);
     toast(`Queued ${r.jobs.length} downloads.`, "ok");
@@ -617,8 +628,8 @@ function videoCard(i, key) {
   if (i.unavailable) badge = html`<span class="badge off">${i.unavailable}</span>`;
   else if (queued) badge = html`<span class="badge queued">In queue</span>`;
   else if (i.downloaded) badge = html`<span class="badge got">${raw(ICON.check)} Downloaded</span>`;
-  const { duration, title, size } = cardDetails(i);
-  const meta = [i.views ? `${compact.format(i.views)} views` : "", size].filter(Boolean).join(" · ");
+  const { duration, title, size, published, publishedFull } = cardDetails(i);
+  const meta = [published, i.views ? `${compact.format(i.views)} views` : "", size].filter(Boolean).join(" · ");
   return html`<div class="vcard ${sel ? "sel" : ""} ${i.downloaded ? "got" : ""} ${i.unavailable ? "off" : ""} ${badge ? "has-badge" : ""}"
       data-key="${i.key}" title="${title}" role="checkbox" aria-checked="${sel}">
     <div class="thumb">${thumb}
@@ -628,7 +639,7 @@ function videoCard(i, key) {
     </div>
     <span class="tick">${raw(ICON.check)}</span>
     <div class="vtitle">${title}</div>
-    ${meta ? html`<div class="vmeta">${meta}</div>` : ""}
+    ${meta ? html`<div class="vmeta" title="${publishedFull}">${meta}</div>` : ""}
   </div>`;
 }
 
@@ -652,6 +663,8 @@ function cardDetails(i) {
     // Facebook's Reels tab has no captions; the video page has the real title.
     title: (x?.title && /^Reel \d+$/.test(i.title)) ? x.title : i.title,
     size: d?.size ? `${d.size_exact ? "" : "≈"}${fmtBytes(d.size)}` : "",
+    published: fmtPublished(x?.date || i.date, !!x?.date || i.date_exact),
+    publishedFull: x?.date || i.date_exact ? `Published ${fmtPublished(x?.date || i.date, true)}` : i.date ? `Published about ${fmtPublished(i.date)}` : "",
   };
 }
 
@@ -706,7 +719,7 @@ const cardObserver = new IntersectionObserver((entries) => {
   const hide = new Set();
   entries.forEach((e) => {
     const c = e.target;
-    if (c.classList.contains("off") || c.classList.contains("got")) return;
+    if (c.classList.contains("off")) return;
     if (e.isIntersecting) show.push(c.dataset.key);
     else if (!sel.has(c.dataset.key)) hide.add(c.dataset.key);
   });
@@ -880,6 +893,7 @@ $("#pk-download").addEventListener("click", async () => {
     const r = await api("POST", "/api/jobs", {
       lookup_id: p.lk.lookup_id, selections, inputs: [p.input],
       options: { ...state.options, limit: null }, output_dir: $("#opt-output").value.trim(),
+      direct: directOn(),
     });
     trackDevice(r.jobs);
     const n = selSize(() => true);
@@ -995,7 +1009,7 @@ function itemStatus(i) {
     case "done": return html`<span class="st done">${raw(ICON.check)} ${i.size ? fmtBytes(i.size) : "Done"}</span>`;
     case "skipped": return html`<span class="st skipped">Already there</span>`;
     case "failed": return html`<span class="st failed">Failed</span>`;
-    case "cancelled": return html`<span class="st">Cancelled</span>`;
+    case "cancelled": return html`<span class="st">${i.user_cancelled ? "Cancelled by you" : "Cancelled"}</span>`;
     case "queued": return html`<span class="st">Queued</span>`;
     default: {
       const pct = Math.round((i.progress || 0) * 100);
@@ -1008,7 +1022,9 @@ function itemStatus(i) {
 
 function itemRow(i, withReveal = true) {
   const num = i.index != null ? `#${i.index}` : "";
-  const reveal = withReveal && i.file && state.mode === "local"
+  const reveal = ["queued", "downloading", "processing"].includes(i.status)
+    ? html`<button class="icon-btn danger" title="Cancel just this video" aria-label="Cancel just this video" data-cancel-item="${i.key}">${raw(ICON.x)}</button>`
+    : withReveal && i.file && state.mode === "local"
     ? html`<button class="icon-btn" title="Show in Finder" data-reveal="${i.out_dir}/${i.file}">${raw(ICON.reveal)}</button>`
     : html`<span></span>`;
   return html`<div class="item">
@@ -1048,7 +1064,7 @@ function jobHtml(j) {
   if (c.done && c.skipped) stats.push(html`<span>${c.skipped.toLocaleString()} already there</span>`);
   if (c.failed) stats.push(html`<span class="err"><b>${c.failed}</b> failed</span>`);
   if (j.speed) stats.push(html`<span>${fmtSpeed(j.speed)}</span>`);
-  if (device.jobs.has(j.id)) stats.push(deviceStat(j));
+  if (device.jobs.has(j.id) || direct.jobs.has(j.id)) stats.push(deviceStat(j));
   if (c.total && active) stats.push(html`<span>${pct}%</span>`);
   stats.push(html`<span class="muted">${timeAgo(j.created)}</span>`);
 
@@ -1119,6 +1135,18 @@ function renderJobs() {
 $("#jobs").addEventListener("click", async (e) => {
   const reveal = e.target.closest("[data-reveal]");
   if (reveal) return openPath(reveal.dataset.reveal, true);
+  const stop = e.target.closest("[data-cancel-item]");
+  if (stop) {
+    const id = stop.closest(".job").dataset.id;
+    stop.disabled = true;
+    try {
+      await api("POST", `/api/jobs/${id}/items/cancel?key=${encodeURIComponent(stop.dataset.cancelItem)}`);
+      toast("Cancelled that video — the rest keep going.");
+      if (state.expanded.has(id)) loadDetails(id);
+      pollNow();
+    } catch (err) { stop.disabled = false; toast(err.message, "err"); }
+    return;
+  }
   const filterBtn = e.target.closest("[data-filter]");
   if (filterBtn) {
     const id = filterBtn.parentElement.dataset.job;
@@ -1190,6 +1218,7 @@ async function poll() {
     await Promise.all([...state.expanded].filter((id) => state.jobs.some((j) => j.id === id)).map(loadDetails));
     renderJobs();
     if (device.jobs.size) syncDevice();
+    if (direct.jobs.size) pumpDirect();
     if (state.jobs.some((j) => ACTIVE.has(j.status))) delay = 1000;
   } catch {
     delay = 3000;
@@ -1201,9 +1230,11 @@ const pollNow = () => setTimeout(poll, 150);
 /* ================================================================ where it runs & save to this device */
 
 // "local":   the browser is on the computer running Vidstash — videos save straight into the Save to folder.
-// "remote":  Vidstash runs on another computer (e.g. at home, over Tailscale). Videos save there, and with
-//            "Copy to this device" each finished one is also copied here: into a folder you pick
-//            (Chrome/Edge over HTTPS) or into the browser's Downloads folder.
+// "remote":  Vidstash runs on another computer (e.g. at home, over Tailscale). "Save videos to" picks where:
+//            - "This device": the host fetches each video and streams it straight here, keeping nothing.
+//            - "The Vidstash computer": saved there only.
+//            - "Both": saved there, and each finished one is also copied here.
+//            Here means a folder you pick (Chrome/Edge over HTTPS) or the browser's Downloads folder.
 // "preview": the read-only online deployment (Vercel), which can't download at all.
 const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
 const canPickFolder = "showDirectoryPicker" in window;
@@ -1240,7 +1271,10 @@ const idb = {
 // jobs: id -> {seen, queued: Set (this page), done: Set (persisted), saved, failed}
 const device = { dir: null, paused: false, jobs: new Map(), queue: [], busy: false };
 
-const deviceOn = () => state.mode === "remote" && store.get("device", false);
+// "Copy to this device" from before became "Both"
+const saveWhere = () => store.get("saveWhere", store.get("device", false) ? "both" : "device");
+const deviceOn = () => state.mode === "remote" && saveWhere() === "both";
+const directOn = () => state.mode === "remote" && saveWhere() === "device";
 
 function saveDeviceJobs() {
   store.set("deviceJobs", Object.fromEntries([...device.jobs].map(([id, t]) =>
@@ -1248,14 +1282,16 @@ function saveDeviceJobs() {
 }
 
 function renderDevice() {
-  const on = store.get("device", false);
-  $$(".device-toggle").forEach((el) => { el.checked = on; });
-  $$(".device-pick").forEach((el) => { el.hidden = !on || !canPickFolder; el.textContent = device.dir ? "Change folder…" : "Choose folder…"; });
-  const where = !on ? "Videos stay only on the computer running Vidstash."
-    : !canPickFolder ? "Each finished video goes to this browser's Downloads folder. Keep this tab open. (To pick a folder, use Chrome or Edge over HTTPS.)"
-    : device.dir ? `Each finished video is copied into “${device.dir.name}” on this device. Keep this tab open.`
-    : "You'll pick a folder on this device when you press Download. Keep this tab open.";
-  $$(".device-where").forEach((el) => { el.textContent = where; });
+  const where = saveWhere();
+  $$(".save-where button").forEach((b) => b.classList.toggle("on", b.dataset.value === where));
+  $$(".device-pick").forEach((el) => { el.hidden = where === "host" || !canPickFolder; el.textContent = device.dir ? "Change folder…" : "Choose folder…"; });
+  $$(".host-save").forEach((el) => { el.hidden = state.mode === "preview" || directOn(); });
+  const here = !canPickFolder ? "this browser's Downloads folder"
+    : device.dir ? `“${device.dir.name}” on this device` : "a folder you pick on this device when you press Download";
+  const text = where === "host" ? "Videos are saved only on the computer running Vidstash."
+    : where === "device" ? `Each video goes straight into ${here} as it downloads. Nothing is kept on the Vidstash computer. Keep this tab open.`
+    : `Videos are saved on the Vidstash computer, and each finished one is also copied into ${here}. Keep this tab open.`;
+  $$(".device-where").forEach((el) => { el.textContent = text; });
 }
 
 async function pickDeviceFolder() {
@@ -1276,7 +1312,7 @@ async function pickDeviceFolder() {
 
 /** Get ready to copy this download to the device. Call straight from the click: browsers only show pickers then. */
 async function prepareDevice() {
-  if (!deviceOn() || !canPickFolder) return true;
+  if (!(deviceOn() || directOn()) || !canPickFolder) return true;
   if (!device.dir) return pickDeviceFolder();
   if ((await device.dir.requestPermission({ mode: "readwrite" })) === "granted") { device.paused = false; return true; }
   toast("This device's folder wasn't allowed — choose it again.", "err");
@@ -1284,6 +1320,7 @@ async function prepareDevice() {
 }
 
 function trackDevice(jobs) {
+  if (directOn()) return trackDirect(jobs);
   if (!deviceOn()) return;
   for (const j of jobs) device.jobs.set(j.id, { seen: 0, queued: new Set(), done: new Set(), saved: 0, failed: 0 });
   saveDeviceJobs();
@@ -1339,7 +1376,79 @@ async function pumpDevice() {
 }
 
 async function resumeDevice() {
-  if (await prepareDevice()) { device.paused = false; renderJobs(); pumpDevice(); }
+  if (await prepareDevice()) { device.paused = false; renderJobs(); pumpDevice(); pumpDirect(); }
+}
+
+/* ---- "This device": the device asks for each video and saves it as it streams in */
+
+// jobs: id -> {inflight: Map(key -> time asked), busy}
+const direct = { jobs: new Map() };
+const DIRECT_GIVE_UP = 3 * 60 * 1000; // a download the browser never started
+
+const saveDirectJobs = () => store.set("directJobs", [...direct.jobs.keys()]);
+
+function trackDirect(jobs) {
+  for (const j of jobs) direct.jobs.set(j.id, { inflight: new Map(), busy: false });
+  saveDirectJobs();
+}
+
+async function pumpDirect() {
+  for (const id of direct.jobs.keys()) {
+    if (!state.jobs.some((j) => j.id === id)) { direct.jobs.delete(id); saveDirectJobs(); }
+  }
+  for (const j of state.jobs) {
+    const t = direct.jobs.get(j.id);
+    if (!t || t.busy || j.status !== "downloading") continue;
+    if (canPickFolder && (!device.dir || (await device.dir.queryPermission({ mode: "readwrite" })) !== "granted")) {
+      if (!device.paused) { device.paused = true; renderJobs(); } // after a reload the browser wants a click first
+      continue;
+    }
+    t.busy = true;
+    try {
+      const watch = [...t.inflight.keys()].map(encodeURIComponent).join(",");
+      const r = await api("GET", `/api/jobs/${j.id}/direct?watch=${watch}`);
+      for (const [key, st] of Object.entries(r.status)) {
+        const waited = Date.now() - t.inflight.get(key);
+        if (st !== "queued" && st !== "downloading") t.inflight.delete(key);
+        else if (st === "queued" && waited > DIRECT_GIVE_UP) t.inflight.delete(key); // ask again
+      }
+      // a plain download can't tell us when it's done, so take those one at a time
+      const limit = canPickFolder ? Math.min(state.options.workers || 3, 4) : 1;
+      for (const it of r.next) {
+        if (t.inflight.size >= limit) break;
+        if (t.inflight.has(it.key)) continue;
+        t.inflight.set(it.key, Date.now());
+        saveDirect(j, it, t);
+      }
+    } catch { /* try again on the next poll */ }
+    t.busy = false;
+  }
+}
+
+async function saveDirect(job, it, t) {
+  const url = `/api/jobs/${job.id}/stream?key=${encodeURIComponent(it.key)}`;
+  if (!canPickFolder) {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = it.name;
+    document.body.append(a);
+    a.click();
+    a.remove();
+    return;
+  }
+  try {
+    let dir = device.dir;
+    for (const part of it.sub.split(/[\\/]/).filter((x) => x && x !== ".")) dir = await dir.getDirectoryHandle(safeName(part), { create: true });
+    const res = await fetch(url);
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.detail?.message || `download failed (${res.status})`);
+    const fh = await dir.getFileHandle(safeName(it.name), { create: true });
+    await res.body.pipeTo(await fh.createWritable());
+  } catch (e) {
+    toast(`Couldn't save “${it.title}” on this device: ${e.message}`, "err");
+  } finally {
+    t.inflight.delete(it.key);
+    pollNow();
+  }
 }
 
 const safeName = (s) => s.replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").replace(/[. ]+$/, "") || "_";
@@ -1348,6 +1457,7 @@ async function saveToDevice(job, item) {
   const url = `/api/jobs/${job.id}/file?key=${encodeURIComponent(item.key)}`;
   if (!canPickFolder) {
     const a = document.createElement("a");
+    // a one-time link: the host deletes its copy once this browser got all of it
     a.href = url;
     a.download = item.file;
     document.body.append(a);
@@ -1367,6 +1477,11 @@ async function saveToDevice(job, item) {
 }
 
 function deviceStat(j) {
+  if (direct.jobs.has(j.id)) {
+    return device.paused && j.status === "downloading"
+      ? html`<span class="err">Saving to this device is paused <button class="link" data-act="device-resume">Continue</button></span>`
+      : html`<span>Straight to this device</span>`;
+  }
   const t = device.jobs.get(j.id);
   if (!t) return "";
   if (device.paused && (t.queued.size || device.queue.some((q) => q.t === t))) {
@@ -1375,16 +1490,19 @@ function deviceStat(j) {
   return html`<span><b>${t.saved.toLocaleString()}</b> copied to this device${t.failed ? html` · <span class="err">${t.failed} failed</span>` : ""}</span>`;
 }
 
-$$(".device-toggle").forEach((el) => el.addEventListener("change", (e) => {
-  store.set("device", e.target.checked);
+$$(".save-where").forEach((el) => segmented(el, saveWhere(), (v) => {
+  store.set("saveWhere", v);
   renderDevice();
-  toast(e.target.checked ? "Saved — new downloads will also be copied to this device." : "Saved — videos will stay on the host only.", "ok");
+  toast({ device: "Saved — videos will go straight to this device, nothing kept on the Vidstash computer.",
+    host: "Saved — videos will stay on the Vidstash computer.",
+    both: "Saved — videos are kept on the Vidstash computer and copied to this device." }[v], "ok");
 }));
 $$(".device-pick").forEach((el) => el.addEventListener("click", () => pickDeviceFolder().catch((e) => toast(e.message, "err"))));
 
 async function restoreDevice() {
   if (state.mode !== "remote") return;
   if (canPickFolder) device.dir = (await idb.get("deviceDir")) || null;
+  for (const id of store.get("directJobs", [])) direct.jobs.set(id, { inflight: new Map(), busy: false });
   for (const [id, t] of Object.entries(store.get("deviceJobs", {}))) {
     device.jobs.set(id, { seen: 0, queued: new Set(), done: new Set(t.done || []), saved: t.saved || 0, failed: t.failed || 0 });
   }

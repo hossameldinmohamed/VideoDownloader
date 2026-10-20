@@ -171,15 +171,18 @@
               <button class="btn small ghost local-only" id="btn-open-output">Open</button>
             </div>
             <small class="muted local-only">Any folder on this computer, including external drives. Each channel/page gets its own folder inside, named after it.</small>
-            <small class="muted remote-only">This folder is on the computer running Vidstash, not the device you're using now. Turn on “Copy to this device” below to get the videos here too.</small>
+            <small class="muted remote-only">This folder is on the computer running Vidstash, not the device you're using now. Its channel folders also remember what you already have.</small>
           </div>
 
           <div class="field span2 remote-only">
+            <label>Save videos to</label>
             <div class="device-box">
-              <label class="switch-row">
-                <span><b>Copy to this device</b><br><small class="muted device-where"></small></span>
-                <input type="checkbox" class="switch device-toggle">
-              </label>
+              <div class="segmented save-where" role="group" aria-label="Where videos are saved">
+                <button data-value="device">This device</button>
+                <button data-value="host">The Vidstash computer</button>
+                <button data-value="both">Both</button>
+              </div>
+              <small class="muted device-where"></small>
               <button class="btn small device-pick">Choose folder…</button>
             </div>
           </div>
@@ -212,7 +215,7 @@
           </button>
         </div>
 
-        <div class="pk-folder not-preview">
+        <div class="pk-folder not-preview host-save">
           <svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>
           <span class="muted"><span class="local-only">Saves to</span><span class="remote-only">Saves on the host to</span></span>
           <span class="mono path" id="pk-folder-path"></span>
@@ -221,10 +224,13 @@
         </div>
 
         <div class="device-box pk-device remote-only">
-          <label class="switch-row">
-            <span><b>Copy to this device</b><br><small class="muted device-where"></small></span>
-            <input type="checkbox" class="switch device-toggle">
-          </label>
+          <b>Save to</b>
+          <div class="segmented save-where" role="group" aria-label="Where videos are saved">
+            <button data-value="device">This device</button>
+            <button data-value="host">The Vidstash computer</button>
+            <button data-value="both">Both</button>
+          </div>
+          <small class="muted device-where"></small>
           <button class="btn small device-pick">Choose folder…</button>
         </div>
 

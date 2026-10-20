@@ -207,47 +207,108 @@ def test_job_file_streams_finished_videos_only(client, monkeypatch):
     assert client.get("/api/jobs/missing/file", params={"key": "v0"}).status_code == 404
 
 
-def test_vercel_preview_is_flagged_and_refuses_downloads(client, monkeypatch):
-    assert client.get("/api/settings").json()["preview"] is False
-    monkeypatch.setenv("VERCEL", "1")
-    assert client.get("/api/settings").json()["preview"] is True
-    r = client.post("/api/jobs", json={"inputs": ["@chan"]}, headers=H)
-    assert r.status_code == 400 and "preview" in r.json()["detail"]["message"]
+
+def test_this_device_only_streams_without_saving(client, monkeypatch, tmp_path):
+    def fake_scan(target, options, reporter=None, headless=True):
+        return {"platform": "youtube", "kind": "channel", "title": "Chan", "avatar": None,
+                "groups": [{"key": "videos", "label": "Videos", "folder": ["Chan"], "single": False, "limit_from": "end",
+                            "items": [{"key": f"v{i}", "archive": f"youtube v{i}", "url": f"u{i}", "title": f"T{i}",
+                                       "thumbnail": None, "duration": 1} for i in range(3)]}]}
+
+    class FakeStream:
+        def __init__(self, item, options, cancelled):
+            self.item, self.name, self.size, self.expected = item, engine.direct_name(item, options), None, 9
+            self.parts = [b"abc", b"def", b"ghi"]
+
+        def open(self):
+            if self.item["key"] == "v2":
+                raise RuntimeError("Video unavailable")
+            return self
+
+        def read(self):
+            return self.parts.pop(0) if self.parts else b""
+
+        def close(self):
+            pass
+
+    def no_download(*a):
+        raise AssertionError("this device only must not download on the host")
+
+    monkeypatch.setattr(engine, "scan", fake_scan)
+    monkeypatch.setattr(engine, "DirectStream", FakeStream)
+    monkeypatch.setattr(engine, "_download_one", no_download)
+    out = tmp_path / "out"
+    job_id = client.post("/api/jobs", json={"inputs": ["@chan"], "options": {}, "direct": True, "output_dir": str(out)},
+                         headers=H).json()["jobs"][0]["id"]
+    for _ in range(100):
+        q = client.get(f"/api/jobs/{job_id}/direct")
+        if q.status_code == 200 and q.json()["next"]:
+            break
+        time.sleep(0.05)
+    nxt = q.json()["next"]
+    assert [n["key"] for n in nxt] == ["v0", "v1", "v2"]
+    assert nxt[0]["name"] == "001 - T0.mp4" and nxt[0]["sub"] == "Chan"
+
+    r = client.get(f"/api/jobs/{job_id}/stream", params={"key": "v0"})
+    assert r.status_code == 200 and r.content == b"abcdefghi"
+    assert "001%20-%20T0.mp4" in r.headers["content-disposition"]
+    assert client.get(f"/api/jobs/{job_id}/stream", params={"key": "v0"}).status_code == 409  # already sent
+    assert client.get(f"/api/jobs/{job_id}/stream", params={"key": "v2"}).status_code == 422
+    assert client.get(f"/api/jobs/{job_id}/direct", params={"watch": "v0,v2"}).json()["status"] == {
+        "v0": "done", "v2": "failed"}
+    client.post(f"/api/jobs/{job_id}/items/cancel", params={"key": "v1"}, headers=H)
+    for _ in range(100):
+        job = client.get(f"/api/jobs/{job_id}").json()
+        if job["status"] not in ("queued", "scanning", "downloading"):
+            break
+        time.sleep(0.05)
+    assert job["status"] == "partial"
+    # nothing but the bookkeeping is kept on the host, and it remembers what the device got
+    assert sorted(f.name for f in (out / "Chan").iterdir()) == [".downloaded.txt", ".manifest.json"]
+    assert engine.downloaded_keys(out / "Chan", {"format": "mp4"}) == {"youtube v0"}
 
 
-def test_item_details(client, monkeypatch):
-    def fake_lookup(target, options, reporter=None):
-        return {"platform": "facebook", "kind": "page", "url": target.url, "title": "Page", "avatar": None,
-                "subtitle": None, "subscribers": None, "folder": ["Page"], "groups": {},
-                "tabs": [{"key": "reels", "label": "Reels", "type": "videos"}],
-                "default_tab": "reels", "target": target.to_dict()}
+def test_cancel_one_video_keeps_the_rest_going(client, monkeypatch):
+    import threading
 
-    def fake_load(lk, key, options, reporter=None, headless=True):
-        g = {"key": key, "label": "Reels", "type": "shorts", "folder": ["Page"], "single": False,
-             "limit_from": "start", "chrono": "newest_first",
-             "items": [{"key": "r1", "archive": "facebook 1", "url": "https://www.facebook.com/reel/1",
-                        "title": "Reel 1", "thumbnail": None, "duration": None, "views": None, "unavailable": None}]}
-        lk["groups"][key] = g
-        return g
+    started, release = threading.Event(), threading.Event()
 
-    calls = []
+    def fake_scan(target, options, reporter=None, headless=True):
+        return {"platform": "youtube", "kind": "channel", "title": "Chan", "avatar": None,
+                "groups": [{"key": "videos", "label": "Videos", "folder": ["Chan"], "single": False, "limit_from": "end",
+                            "items": [{"key": f"v{i}", "archive": f"youtube v{i}", "url": f"u{i}", "title": f"T{i}",
+                                       "thumbnail": None, "duration": 1} for i in range(3)]}]}
 
-    def fake_details(url, platform, options):
-        calls.append((url, platform, options["format"]))
-        return {"duration": 12, "title": "Hello", "size": 1000, "size_exact": True}
+    def fake_download(item, options, reporter, cookiefile):
+        if reporter.cancelled(item):
+            reporter.update(item, status="cancelled")
+            return False
+        reporter.update(item, status="downloading")
+        if item["key"] == "v0":
+            started.set()
+            while not reporter.cancelled(item):
+                time.sleep(0.01)
+            reporter.update(item, status="cancelled")
+            return False
+        release.wait(5)
+        reporter.update(item, status="done", progress=1.0)
+        return True
 
-    monkeypatch.setattr(web, "_details_cache", {})
-    monkeypatch.setattr(engine, "lookup", fake_lookup)
-    monkeypatch.setattr(engine, "load_group", fake_load)
-    monkeypatch.setattr(engine, "item_details", fake_details)
-
-    lid = client.post("/api/lookup", json={"input": "somepage", "platform": "facebook"}, headers=H).json()["lookup_id"]
-    client.post(f"/api/lookup/{lid}/group", json={"key": "reels"}, headers=H)
-    url = f"/api/lookup/{lid}/details"
-    assert client.post(url, json={"key": "nope"}, headers=H).status_code == 404
-    r = client.post(url, json={"key": "r1"}, headers=H)
-    assert r.status_code == 200 and r.json()["size"] == 1000
-    client.post(url, json={"key": "r1"}, headers=H)  # cached
-    client.post(url, json={"key": "r1", "options": {"format": "mp3"}}, headers=H)  # different format
-    assert calls == [("https://www.facebook.com/reel/1", "facebook", "mp4"),
-                     ("https://www.facebook.com/reel/1", "facebook", "mp3")]
+    monkeypatch.setattr(engine, "scan", fake_scan)
+    monkeypatch.setattr(engine, "_download_one", fake_download)
+    job_id = client.post("/api/jobs", json={"inputs": ["@chan"], "options": {"workers": 1}},
+                         headers=H).json()["jobs"][0]["id"]
+    assert started.wait(5)
+    cancel = f"/api/jobs/{job_id}/items/cancel"
+    assert client.post(cancel, params={"key": "v0"}, headers=H).json() == {"ok": True}  # the one downloading
+    assert client.post(cancel, params={"key": "v2"}, headers=H).json() == {"ok": True}  # one still waiting
+    assert client.post(cancel, params={"key": "nope"}, headers=H).json() == {"ok": False}
+    release.set()
+    for _ in range(200):
+        job = client.get(f"/api/jobs/{job_id}").json()
+        if job["status"] not in ("queued", "scanning", "downloading"):
+            break
+        time.sleep(0.02)
+    status = {i["key"]: i["status"] for i in job["items"]}
+    assert status == {"v0": "cancelled", "v1": "done", "v2": "cancelled"}
+    assert job["status"] == "done" and "2 cancelled by you" in job["message"]

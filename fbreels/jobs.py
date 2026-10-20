@@ -2,6 +2,7 @@
 or video) runs at a time, with its videos downloading in parallel."""
 
 import json
+import os
 import queue
 import threading
 import time
@@ -14,8 +15,10 @@ from .resolver import Target
 
 ACTIVE = {"queued", "scanning", "downloading"}
 MAX_HISTORY = 60
+DIRECT_IDLE = 15 * 60  # a "this device only" job waits this long for the device to come back
 ITEM_FIELDS_SAVED = ("key", "archive", "url", "title", "thumbnail", "duration", "group", "platform", "index",
-                     "prefix", "out_dir", "archive_path", "status", "progress", "error", "file", "size")
+                     "prefix", "out_dir", "archive_path", "status", "progress", "error", "file", "size",
+                     "user_cancelled")
 
 
 class Job:
@@ -39,6 +42,12 @@ class Job:
         self.started = None
         self.finished = None
         self.cancel_event = threading.Event()
+        self.touched = time.time()  # last time the device pulled a video ("this device only")
+
+    @property
+    def direct(self):
+        """Videos go straight to the device that asked for them, nothing is kept here."""
+        return bool(self.options.get("direct"))
 
     # -- serialization
     def to_dict(self, items="none"):
@@ -73,6 +82,7 @@ class Job:
         job.selected = None
         job.items = [{**i, "speed": None, "eta": None, "phase": ""} for i in d.get("items") or []]
         job.cancel_event = threading.Event()
+        job.touched = time.time()
         if job.status in ACTIVE:
             job.status = "interrupted"
             job.message = "The app was closed while this was running — press Resume to continue."
@@ -96,8 +106,8 @@ class JobReporter(engine.Reporter):
                 self.manager.dirty = True
             item.update(fields)
 
-    def cancelled(self):
-        return self.job.cancel_event.is_set()
+    def cancelled(self, item=None):
+        return self.job.cancel_event.is_set() or super().cancelled(item)
 
 
 class JobManager:
@@ -155,8 +165,34 @@ class JobManager:
             for old in finished[: max(0, len(self.jobs) - MAX_HISTORY)]:
                 self.jobs.pop(old.id, None)
             self.dirty = True
-        self.queue.put(job.id)
+        self._start(job)
         return job
+
+    def _start(self, job):
+        if job.direct:  # mostly waits on the device, so it mustn't hold up the queue
+            threading.Thread(target=self._run_job, args=(job,), daemon=True, name=f"direct-{job.id}").start()
+        else:
+            self.queue.put(job.id)
+
+    def claim_direct(self, job, key):
+        """Hand one waiting video of a "this device only" job to the device that asked for it."""
+        with self.lock:
+            item = next((i for i in job.items if i["key"] == key), None)
+            if not job.direct or job.status != "downloading" or not item or item["status"] != "queued":
+                return None
+            item.update(status="downloading", phase="Sending to this device", progress=0.0, error=None)
+            job.touched = time.time()
+            self.dirty = True
+            return item
+
+    def direct_queue(self, job, watch=(), limit=8):
+        with self.lock:
+            return {
+                "next": [{"key": i["key"], "title": i["title"], "name": engine.direct_name(i, job.options),
+                          "sub": os.path.relpath(i["out_dir"], job.output_dir)}
+                         for i in job.items if i["status"] == "queued" and i["key"] not in watch][:limit],
+                "status": {i["key"]: i["status"] for i in job.items if i["key"] in watch},
+            }
 
     def get(self, job_id) -> Job | None:
         return self.jobs.get(job_id)
@@ -177,6 +213,21 @@ class JobManager:
         self.dirty = True
         return True
 
+    def cancel_item(self, job_id, key):
+        """Stop one video and leave the rest of the job running."""
+        job = self.jobs.get(job_id)
+        if not job or job.status not in ACTIVE:
+            return False
+        with self.lock:
+            item = next((i for i in job.items if i["key"] == key), None)
+            if not item or item["status"] not in ("queued", "downloading", "processing"):
+                return False
+            item["user_cancelled"] = True
+            if item["status"] == "queued":
+                item.update(status="cancelled", progress=0.0)
+            self.dirty = True
+        return True
+
     def retry(self, job_id):
         job = self.jobs.get(job_id)
         if not job or job.status in ACTIVE:
@@ -187,10 +238,10 @@ class JobManager:
         job.finished = None
         with self.lock:
             for i in job.items:
-                if i["status"] in ("failed", "cancelled", "downloading", "processing"):
+                if i["status"] in ("failed", "cancelled", "downloading", "processing") and not i.get("user_cancelled"):
                     i.update(status="queued", progress=0.0, error=None)
         self.dirty = True
-        self.queue.put(job.id)
+        self._start(job)
         return True
 
     def remove(self, job_id):
@@ -219,15 +270,43 @@ class JobManager:
                 continue
             self.current = job.id
             try:
-                self._run(job)
-            except engine.Cancelled:
-                job.status, job.message = "cancelled", "Cancelled."
-            except Exception as e:
-                job.status, job.message = "failed", engine.clean_error(e)
+                self._run_job(job)
             finally:
-                job.finished = time.time()
                 self.current = None
-                self.dirty = True
+
+    def _run_job(self, job):
+        try:
+            self._run(job)
+        except engine.Cancelled:
+            job.status, job.message = "cancelled", "Cancelled."
+        except Exception as e:
+            job.status, job.message = "failed", engine.clean_error(e)
+        finally:
+            job.finished = time.time()
+            self.dirty = True
+
+    def _wait_for_device(self, job) -> bool:
+        """The device pulls each video itself (see /api/jobs/{id}/stream); wait until it has them all."""
+        with self.lock:
+            for i in job.items:
+                if i["status"] in ("failed", "cancelled") and not i.get("user_cancelled"):
+                    i.update(status="queued", progress=0.0, error=None)
+        job.touched = time.time()
+        while True:
+            with self.lock:
+                waiting = [i for i in job.items if i["status"] == "queued"]
+                busy = any(i["status"] in ("downloading", "processing") for i in job.items)
+                if job.cancel_event.is_set() and not busy:
+                    for i in waiting:
+                        i["status"] = "cancelled"
+                    return True
+                if not waiting and not busy:
+                    return True
+                if not busy and time.time() - job.touched > DIRECT_IDLE:
+                    job.status = "interrupted"
+                    job.message = "Paused — open Vidstash on your device and press Resume to get the rest."
+                    return False
+            time.sleep(0.5)
 
     def _run(self, job: Job):
         reporter = JobReporter(self, job)
@@ -257,7 +336,14 @@ class JobManager:
         counts = engine.summarize(job.items)
         todo = counts["queued"] + counts["failed"] + counts["cancelled"]
         job.message = f"Downloading {todo} video(s)…" if todo else "Everything is already downloaded."
-        counts = engine.run_items(job.items, job.options, reporter)
+        if job.direct:
+            if todo:
+                job.message = f"Sending {todo} video(s) straight to your device…"
+            if not self._wait_for_device(job):
+                return
+            counts = engine.summarize(job.items)
+        else:
+            counts = engine.run_items(job.items, job.options, reporter)
 
         if job.cancel_event.is_set():
             job.status, job.message = "cancelled", "Cancelled — press Resume to continue where it stopped."
@@ -268,3 +354,5 @@ class JobManager:
         else:
             job.status = "done"
             job.message = f"{counts['done']} downloaded, {counts['skipped']} already there."
+            if counts["cancelled"]:
+                job.message += f" {counts['cancelled']} cancelled by you."

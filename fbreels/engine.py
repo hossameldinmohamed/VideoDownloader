@@ -8,6 +8,7 @@ Reporter so the caller can print it or push it to the UI.
 """
 
 import concurrent.futures
+import datetime
 import functools
 import json
 import os
@@ -19,6 +20,7 @@ import threading
 from pathlib import Path
 
 import yt_dlp
+from yt_dlp.downloader import get_suitable_downloader
 from yt_dlp.postprocessor import (
     EmbedThumbnailPP,
     FFmpegEmbedSubtitlePP,
@@ -57,8 +59,9 @@ class Reporter:
     def update(self, item: dict, **fields) -> None:
         item.update(fields)
 
-    def cancelled(self) -> bool:
-        return False
+    def cancelled(self, item: dict | None = None) -> bool:
+        """Stop everything, or (with an item) just that one video."""
+        return bool(item and item.get("user_cancelled"))
 
 
 # --------------------------------------------------------------------------
@@ -155,6 +158,17 @@ def _entry_thumb(entry: dict, vertical: bool = False):
     return thumbs[-1]["url"] if thumbs else None
 
 
+def _entry_date(entry: dict):
+    """When it was published, as a Unix timestamp (None if unknown)."""
+    ts = entry.get("timestamp") or entry.get("release_timestamp")
+    if ts:
+        return int(ts)
+    day = str(entry.get("upload_date") or entry.get("release_date") or "")
+    if len(day) == 8 and day.isdigit():
+        return int(datetime.datetime.strptime(day, "%Y%m%d").replace(tzinfo=datetime.timezone.utc).timestamp())
+    return None
+
+
 def _yt_entries(info: dict, vertical: bool = False):
     seen = set()
     for entry in info.get("entries") or []:
@@ -174,6 +188,8 @@ def _yt_entries(info: dict, vertical: bool = False):
             "thumbnail": _entry_thumb(entry, vertical),
             "duration": entry.get("duration"),
             "views": entry.get("view_count"),
+            # channel listings only say "3 weeks ago", so this is approximate until the details load
+            "date": _entry_date(entry),
             "unavailable": {"is_live": "Live now", "is_upcoming": "Upcoming"}.get(live),
         }
 
@@ -201,7 +217,8 @@ def _yt_collections(info: dict):
 
 
 def _flat(options, **extra) -> dict:
-    return {**base_opts(options), "extract_flat": "in_playlist", **extra}
+    return {**base_opts(options), "extract_flat": "in_playlist",
+            "extractor_args": {"youtubetab": {"approximate_date": [""]}}, **extra}
 
 
 def _probe_tab(base_url: str, tab: str, options: dict):
@@ -242,6 +259,7 @@ def lookup(target: Target, options: dict, reporter: Reporter | None = None) -> d
         folder = [sanitize_folder(channel)]
         item = {"key": vid, "archive": f"youtube {vid}", "url": target.url, "title": info.get("title") or vid,
                 "thumbnail": _thumb(vid), "duration": info.get("duration"), "views": info.get("view_count"),
+                "date": _entry_date(info), "date_exact": True,
                 "unavailable": {"is_live": "Live now", "is_upcoming": "Upcoming"}.get(info.get("live_status"))}
         lk.update(title=channel, folder=folder, default_tab="video",
                   tabs=[{"key": "video", "label": "Video", "type": "videos"}])
@@ -349,7 +367,7 @@ def _scan_facebook_video(url: str, options: dict) -> dict:
     item = {"key": url, "archive": f"facebook {vid}", "url": url,
             "title": info.get("title") or f"Facebook video {vid}",
             "thumbnail": info.get("thumbnail"), "duration": info.get("duration"), "views": info.get("view_count"),
-            "unavailable": None}
+            "date": _entry_date(info), "date_exact": True, "unavailable": None}
     return _video_group("video", "Video", [sanitize_folder(uploader)], [item], single=True, limit_from="start", chrono=None)
 
 
@@ -373,7 +391,7 @@ def _scan_facebook_page(url: str, options: dict, reporter: Reporter, headless: b
         rid = u.rstrip("/").rsplit("/", 1)[-1]
         items.append({"key": u, "archive": f"facebook {rid}", "url": u, "title": f"Reel {rid}",
                       "thumbnail": reel["thumbnail"], "duration": None, "views": reel["views"],
-                      "unavailable": None})
+                      "date": None, "unavailable": None})
     # Facebook lists newest first; numbers are handed out in that order.
     return _video_group("reels", "Reels", [sanitize_folder(name)], items, kind="shorts",
                         limit_from="start", chrono="newest_first")
@@ -715,7 +733,7 @@ def item_details(url: str, platform: str, options: dict) -> dict:
                                       and not vcodec.startswith(("avc", "h264"))):
         exact = False
     return {"duration": duration, "title": info.get("title"), "size": size,
-            "size_exact": exact if size else False}
+            "size_exact": exact if size else False, "date": _entry_date(info)}
 
 
 def _outtmpl(item: dict, options: dict) -> str:
@@ -730,14 +748,14 @@ def _outtmpl(item: dict, options: dict) -> str:
 
 
 def _download_one(item: dict, options: dict, reporter: Reporter, fb_cookiefile) -> bool:
-    if reporter.cancelled():
+    if reporter.cancelled(item):
         reporter.update(item, status="cancelled")
         return False
 
     parts = {}
 
     def progress_hook(d):
-        if reporter.cancelled():
+        if reporter.cancelled(item):
             raise yt_dlp.utils.DownloadCancelled()
         if d.get("status") == "downloading":
             fid = (d.get("info_dict") or {}).get("format_id", "")
@@ -796,7 +814,7 @@ def _download_one(item: dict, options: dict, reporter: Reporter, fb_cookiefile) 
             if audio:
                 ydl.add_post_processor(FFmpegExtractAudioPP(ydl, preferredcodec=options["format"], preferredquality="0"))
             elif options["format"] == "mp4":
-                ydl.add_post_processor(PlayableMp4PP(ydl, convert_progress, reporter.cancelled))
+                ydl.add_post_processor(PlayableMp4PP(ydl, convert_progress, lambda: reporter.cancelled(item)))
             if opts.get("writesubtitles"):
                 ydl.add_post_processor(FFmpegEmbedSubtitlePP(ydl, already_have_subtitle=False))
             if options.get("embed_metadata"):
@@ -826,9 +844,159 @@ def _download_one(item: dict, options: dict, reporter: Reporter, fb_cookiefile) 
     return True
 
 
+# --------------------------------------------------------------------------
+# straight to the device: the host fetches the video and passes it on as it
+# arrives, joining video + audio on the fly. Nothing is written to its disk.
+
+_NOT_PIPEABLE = "[protocol!*=dash][protocol!=websocket_frag]"
+
+
+def direct_ext(options: dict) -> str:
+    return options["format"] if options["format"] in AUDIO_FORMATS else "mp4"
+
+
+def direct_name(item: dict, options: dict, title: str | None = None) -> str:
+    title = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(title or item["title"]))[:150].strip(" .") or "video"
+    naming = "title" if item["index"] is None else options["naming"]
+    name = item["prefix"] if naming == "number" else title if naming == "title" else f"{item['prefix']} - {title}"
+    return f"{name}.{direct_ext(options)}"
+
+
+def _direct_format_opts(options: dict) -> dict:
+    fmt, ok = options["format"], _NOT_PIPEABLE
+    h = "" if options["quality"] == "best" else f"[height<={options['quality']}]"
+    res = f"res:{options['quality']}" if h else "res"
+    if fmt in AUDIO_FORMATS:
+        return {"format": f"ba[ext=m4a]{ok}/ba{ok}/b{ok}"}
+    if fmt == "original":
+        return {"format": f"bv*{h}{ok}+ba{ok}/b{h}{ok}/b{ok}", "format_sort": [res, "fps"]}
+    # no re-encoding on the fly, so prefer H.264 + AAC, which plays everywhere
+    return {"format": f"bv*[vcodec^=avc1]{h}{ok}+ba[ext=m4a]{ok}/b[ext=mp4]{h}{ok}/bv*{h}{ok}+ba{ok}/b{ok}",
+            "format_sort": [res, "fps", "hdr:sdr", "vcodec:h264", "acodec:aac"]}
+
+
+class DirectStream:
+    """read() gives the finished file's bytes as they come in. Raises Cancelled
+    once cancelled() turns true."""
+
+    def __init__(self, item: dict, options: dict, cancelled=lambda: False):
+        self.item, self.options, self.cancelled = item, options, cancelled
+        self.name, self.size, self.expected = direct_name(item, options), None, None
+        self._proc, self._out, self._threads, self._errors = None, None, [], []
+        self._ydl, self._closing = None, False
+
+    def open(self) -> "DirectStream":
+        cookiefile = _fb_cookiefile() if self.item["platform"] == "facebook" else None
+        self._ydl = yt_dlp.YoutubeDL({**base_opts(self.options, self.item["platform"], cookiefile),
+                                      **_direct_format_opts(self.options)})
+        info = self._ydl.extract_info(self.item["url"], download=False)
+        formats = info.get("requested_formats") or [info]
+        self.name = direct_name(self.item, self.options, info.get("title") if self.item["platform"] == "facebook"
+                                and str(self.item["title"]).startswith("Reel ") else None)
+        sizes = [f.get("filesize") or f.get("filesize_approx") for f in formats]
+        self.expected = sum(sizes) if all(sizes) else None
+        audio = self.options["format"] in AUDIO_FORMATS
+        f0 = formats[0]
+        if (len(formats) == 1 and not str(f0.get("protocol", "")).startswith("m3u8")
+                and f0.get("ext") == direct_ext(self.options)):
+            self._out = self._pipe(f0)  # already the right file: pass it through untouched
+            self.size = f0.get("filesize")
+            self._threads[0].start()
+            return self
+        cmd, fds = ["ffmpeg", "-v", "error", "-nostdin"], []
+        for f in formats:
+            if str(f.get("protocol", "")).startswith("m3u8"):
+                headers = "".join(f"{k}: {v}\r\n" for k, v in (f.get("http_headers") or {}).items())
+                cmd += ["-headers", headers, "-i", f["url"]]
+            else:
+                r = self._pipe(f)
+                fds.append(r)
+                cmd += ["-i", f"pipe:{r}"]
+        for n in range(len(formats)):
+            cmd += ["-map", f"{n}:a?" if audio else str(n)]
+        title = info.get("title")
+        if title:
+            cmd += ["-metadata", f"title={title}"]
+        if self.options["format"] == "mp3":
+            cmd += ["-c:a", "libmp3lame", "-q:a", "0", "-f", "mp3", "pipe:1"]
+        else:
+            cmd += ["-c", "copy", "-f", "mp4", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "pipe:1"]
+        self._proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                      stderr=subprocess.PIPE, pass_fds=fds)
+        for fd in fds:
+            os.close(fd)
+        for t in self._threads:
+            t.start()
+        return self
+
+    def _pipe(self, f) -> int:
+        """Download one format into a pipe with yt-dlp's own downloader (it knows
+        YouTube's rules: chunking, retries, headers). Returns the reading end."""
+        r, w = os.pipe()
+        self._threads.append(threading.Thread(target=self._feed, args=(f, w), daemon=True))
+        return r
+
+    def _feed(self, f, fd):
+        def hook(d):
+            if self.cancelled() or self._closing:
+                raise yt_dlp.utils.DownloadCancelled()
+
+        target = f"/dev/fd/{fd}"  # not a regular file, so yt-dlp writes to it directly, no .part file
+        params = {**self._ydl.params, "nopart": True, "continuedl": False, "noprogress": True}
+        try:
+            dl = get_suitable_downloader(f, params)(self._ydl, params)
+            dl.add_progress_hook(hook)
+            if not dl.download(target, {**f, "_filename": target})[0]:
+                raise RuntimeError("download failed")
+        except (BrokenPipeError, yt_dlp.utils.DownloadCancelled):
+            pass  # ffmpeg stopped reading (it failed, or we're closing), or cancelled
+        except Exception as e:
+            self._errors.append(e)
+        finally:
+            os.close(fd)
+
+    def read(self) -> bytes:
+        if self.cancelled():
+            raise Cancelled()
+        if self._proc is None:  # passed through
+            data = os.read(self._out, 1 << 16)
+            if not data:
+                self._threads[0].join()
+                if self._errors:
+                    raise RuntimeError(clean_error(self._errors[0]))
+            return data
+        data = os.read(self._proc.stdout.fileno(), 1 << 16)
+        if not data:
+            err = self._proc.stderr.read().decode(errors="replace").strip()
+            if self._proc.wait() != 0 or self._errors:
+                raise RuntimeError(clean_error(self._errors[0]) if self._errors
+                                   else f"ffmpeg failed: {err[-300:] or self._proc.returncode}")
+        return data
+
+    def close(self):
+        self._closing = True
+        if self._out is not None:
+            os.close(self._out)  # the feeder gets a broken pipe and stops
+            self._out = None
+        if self._proc and self._proc.poll() is None:
+            self._proc.kill()
+            self._proc.wait()
+        for t in self._threads:
+            t.join(timeout=5)
+        if self._ydl:
+            self._ydl.close()
+
+
+def mark_downloaded(item: dict) -> None:
+    with _archive_lock:
+        with open(item["archive_path"], "a") as f:
+            f.write(item["archive"] + "\n")
+
+
 def run_items(items: list, options: dict, reporter: Reporter | None = None) -> dict:
     reporter = reporter or Reporter()
-    pending = [i for i in items if i["status"] in ("queued", "failed", "cancelled")]
+    # videos you cancelled one by one stay cancelled; re-pick them in the picker to get them after all
+    pending = [i for i in items if i["status"] in ("queued", "failed", "cancelled") and not i.get("user_cancelled")]
     fb_cookiefile = _fb_cookiefile() if any(i["platform"] == "facebook" for i in pending) else None
     for i in pending:
         reporter.update(i, status="queued", error=None, progress=0.0, phase="")

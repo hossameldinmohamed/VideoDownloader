@@ -1,62 +1,171 @@
-# Vidstash
+<div align="center">
 
-Download whole YouTube channels and Facebook pages as MP4 files that play everywhere, from a clean web app that runs on your own computer.
+# 📥 Vidstash
 
-- **Paste anything:** a channel or page link, a playlist, a single video, an `@handle`, a page name, a channel ID or a Facebook profile ID. It works out which one it is.
-- **Neatly organised:** every channel gets its own folder, and files are named `001 - Title.mp4`, `002 - Title.mp4`… in upload order. Numbers never change between runs.
-- **Best quality, plays anywhere:** it downloads the highest resolution available (up to 4K/8K) and makes sure the result is a standard H.264 + AAC MP4. When YouTube only offers VP9/AV1, it converts on your Mac's hardware encoder.
-- **Preview & pick:** see every video with thumbnails, filter by title, and download only the ones you want.
-- **Re-run any time:** only new uploads are downloaded. Stop halfway and resume later.
-- Shorts, Live streams, playlists, MP3/M4A audio, subtitles, cover art, metadata, speed limits, parallel downloads, and browser cookies for members-only or age-restricted videos.
+**Save whole YouTube channels and Facebook pages as MP4 videos that play everywhere.**
 
-## Quick start (macOS)
+Paste a link, tick the videos you want, press Download. That's it.
+
+![Picking videos from a YouTube channel](docs/screenshots/02-pick-videos.png)
+
+</div>
+
+## Why Vidstash?
+
+- 🔗 **Paste anything:** a channel, a playlist, a single video, an `@handle`, or just a name like `NASA`.
+- 👀 **See before you download:** every video with its thumbnail, publish date, views, length and size.
+- ✅ **Never download twice:** videos you already have are marked **✓ Downloaded**. Run it again later and only new uploads are fetched.
+- 🗂️ **Neatly organised:** each channel gets its own folder, with files named `001 - Title.mp4`, `002 - Title.mp4`… in upload order.
+- 🎬 **Best quality that plays anywhere:** up to 4K, as a standard MP4 that works on iPhone, iPad, Android, TVs, Mac and Windows. Audio only (MP3 / M4A) too.
+- 📱 **Use it from your tablet or phone:** open it on any device at home, and videos download straight to that device.
+- 🔒 **Private:** it runs on your own computer. Nothing goes through anyone else's server.
+
+---
+
+## Install (one time, about 5 minutes)
+
+Vidstash runs on a **Mac**. You only do this once.
+
+**1. Install Homebrew**, the free tool that installs everything else. Open **Terminal** (press `⌘ Space` and type *Terminal*), paste this line and press Enter:
 
 ```bash
-git clone <this repo> && cd <repo>
-./app.sh
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 ```
 
-The first run installs everything it needs: a Python virtualenv, `yt-dlp`, a headless Chromium for Facebook, and `ffmpeg` via Homebrew. Your browser then opens at **http://127.0.0.1:8787**.
+**2. Install what Vidstash needs** with this line in the same Terminal window:
 
-After that, start it with `./app.sh` or by double-clicking **Start Vidstash.command** in Finder. Stop it with Ctrl+C in the terminal.
+```bash
+brew install python ffmpeg node
+```
 
-## Using the app
+**3. Download Vidstash.** Click **[Download ZIP](https://github.com/hossameldinmohamed/VideoDownloader/archive/refs/heads/main.zip)**, then double-click the ZIP in your Downloads folder to unpack it. Move the folder wherever you like.
 
-1. **Paste** a link or name and press **Enter** (or **Find videos**). A chip shows what was detected, such as "YouTube channel". For a bare name like `mkbhd`, pick YouTube or Facebook.
-2. **Pick what to download.** The channel opens with only the tabs it actually has: **Videos, Shorts, Live, Podcasts, Playlists, Releases, Courses**. Each tab loads when you open it. Podcasts, Playlists, Releases and Courses open into their own video lists.
-   - **Downloaded videos:** anything you already have from this channel, in any of its folders, is marked **✓ Downloaded** and starts unticked. Tick it to download it again.
-   - **Pre-ticked videos:** new videos in the first tab you open are ticked for you. Use **Select: New only / All / None**, the title filter and **Newest / Oldest first** to adjust.
-   - **Selections across tabs:** you can tick videos in several tabs at once. The bar at the bottom shows the total and the breakdown ("Videos 20 · Shorts 4 · Mix 3"). Press **Download**.
-   - **Live streams:** anything live right now or upcoming can't be selected.
-   - **Folders:** Shorts go in `Channel/Shorts`, Live in `Channel/Live`, and a playlist in `Channel/Playlists/<name>`.
-   - **Whole playlists:** in the Playlists, Podcasts or Releases tab, tick a playlist's circle to grab every new video in it without opening it, or use **Every playlist**. A `watch?v=…&list=…` link offers **Open the whole playlist**.
-   - **Where it saves:** shown right in the picker (**📁 Saves to …**). **Change…** opens a folder picker, which can be any folder or external drive, and the ✓ Downloaded marks re-check against the new folder. A folder that can't be written to is refused.
-   - **Several channels at once:** paste one link per line and the button becomes **Download all N**. That grabs each channel's Videos tab (or a page's Reels) in full and skips anything already downloaded.
-3. **Options** (remembered between runs):
+**4. Start it.** Open the folder and double-click **Start Vidstash.command**.
 
-   | Option | What it does |
-   |---|---|
-   | Quality | Best available, or a cap: 4K / 1440p / 1080p / 720p / 480p / 360p |
-   | Format | **MP4** plays everywhere (converts VP9/AV1 → H.264 when needed) · **MP4 original codec** (no conversion) · **MP3** / **M4A** audio only |
-   | File names | `001 - Title` · `001` · `Title` |
-   | Parallel downloads | 1–8 at a time (3 is the default) |
-   | Subtitles | Download and embed them (languages like `en.*, ar`), optionally including auto-generated ones |
-   | Extras | Embed the thumbnail as cover art; embed title, date, chapters and description |
-   | Browser cookies | Use your browser's YouTube login for members-only or age-restricted videos, or "confirm you're not a bot" errors |
-   | Speed limit | Cap bandwidth per download, e.g. `5M` |
-   | Save to | Any folder. Each channel or page gets a sub-folder named after it |
+> **macOS says it "can't be opened"?** Right-click the file, choose **Open**, then **Open** again. On newer macOS versions, open **System Settings → Privacy & Security** instead, scroll down and click **Open Anyway**. You only need to do this once.
 
-4. **Queue & history** shows live progress, speed, per-video status and errors. Use **Retry** or **Resume** to redo only what failed or stopped, and **Open folder** to jump to the files.
-5. **Library** lists everything you've downloaded, with sizes and file lists.
-6. **Settings** shows a health check (yt-dlp, ffmpeg, encoder, JS runtime, Chromium), has one-click updates, and connects your Facebook account.
+The first start takes a few minutes while it sets itself up. Then your browser opens Vidstash at **http://127.0.0.1:8787**.
 
-### Facebook
+From now on, just double-click **Start Vidstash.command** whenever you want to use it. To stop it, close the Terminal window that opened with it.
 
-Facebook only shows a page's full reel history to logged-in users. The first time you download a Facebook page (or when you click **Settings → Connect Facebook**), a browser window opens for you to log in once. The session is saved in `.fbreels/` on your computer and is never sent anywhere else.
+---
 
-## Terminal usage
+## How to use it
 
-Everything in the app also works from the terminal:
+### 1. Paste a link and press Enter
+
+Paste a YouTube or Facebook link, an `@handle` or a channel name, then press **Enter** or **Find videos**. Not sure what to paste? Click one of the **Try:** examples.
+
+![The start screen](docs/screenshots/01-home.png)
+
+### 2. Tick the videos you want
+
+The channel opens with its **Videos, Shorts, Live, Playlists** and other tabs. Each video shows its publish date, views, length and size.
+
+- New videos are ticked for you. Use **Select: New only / All / None** to change that.
+- Videos you already have show **✓ Downloaded** and aren't ticked.
+- Type in **Filter by title** to find something, or switch between **Newest first** and **Oldest first**.
+- The bar at the bottom shows how many videos you picked and how big they are. Press **Download**.
+
+> **Tip:** paste several links, one per line, to download several channels at once.
+
+### 3. Watch it download
+
+**Queue & history** shows each video's progress, speed and time left.
+
+- **✕** next to a video cancels just that one. The others keep going.
+- **Cancel** stops the whole download. **Resume** or **Retry** picks up only what's left or what failed.
+- **Open folder** shows the finished files.
+
+![Downloads in progress](docs/screenshots/04-queue.png)
+
+### 4. Change quality, format and more (optional)
+
+Open **Options** to choose quality (up to 4K), MP4 or audio only, how files are named, subtitles and where to save. Your choices are remembered.
+
+![The options panel](docs/screenshots/03-options.png)
+
+---
+
+## Download to your tablet or phone
+
+Keep Vidstash running on your Mac, and use it from any tablet or phone on the same Wi-Fi.
+
+**1. Start it so other devices can reach it.** Close Vidstash if it's running. In Terminal, type `cd ` (with a space), drag the Vidstash folder onto the Terminal window, and press Enter. Then run:
+
+```bash
+./app.sh --host 0.0.0.0
+```
+
+**2. Find your Mac's address:** run `ipconfig getifaddr en0` in Terminal. You'll get something like `192.168.0.102`.
+
+**3. On your tablet,** open the browser and go to `http://192.168.0.102:8787`, using your Mac's address.
+
+**4. Choose where videos go** with **Save to**, right above the video list:
+
+| Choice | What happens |
+|---|---|
+| **This device** *(default)* | Videos go straight to your tablet as they download. Nothing is kept on the Mac. |
+| **The Vidstash computer** | Videos are saved only on the Mac. |
+| **Both** | Saved on the Mac, and copied to your tablet too. |
+
+<p align="center"><img src="docs/screenshots/05-tablet.png" alt="Vidstash on a tablet, saving straight to the tablet" width="460"></p>
+
+Good to know:
+
+- With **This device**, videos go to your tablet's normal **Downloads** folder. An iPad may ask you to confirm each one.
+- Keep the Vidstash tab open until the downloads finish. If you close it, the download pauses, and **Resume** continues later.
+- With **This device**, MP4 videos come in up to 1080p, because they can't be converted on the way. For 4K, choose **The Vidstash computer**.
+- Anyone on your Wi-Fi can open Vidstash while it runs this way, so only do this on a network you trust.
+
+<details>
+<summary><b>Use it away from home (with Tailscale)</b></summary>
+
+[Tailscale](https://tailscale.com) is free and connects your own devices privately, from anywhere.
+
+1. Install Tailscale on your Mac and on your tablet or phone, and sign in on both.
+2. On the Mac, run:
+   ```bash
+   tailscale serve --bg 8787
+   ./app.sh --no-browser --allow-host <computer-name>.<tailnet>.ts.net
+   ```
+3. On your device, open `https://<computer-name>.<tailnet>.ts.net`.
+
+Over this secure address, Chrome and Edge let you pick a folder on the device for your videos (choose a folder *inside* Downloads, such as a new `Vidstash` folder) and keep the channel folders.
+
+</details>
+
+---
+
+## Facebook pages
+
+Facebook only shows a page's full list of reels to people who are logged in. The first time you download a Facebook page, or when you click **Settings → Connect Facebook**, a browser window opens so you can log in once. Your login stays on your Mac, in the `.fbreels` folder, and is never sent anywhere else.
+
+---
+
+## If something goes wrong
+
+![The Settings page with its health check](docs/screenshots/06-settings.png)
+
+| Problem | What to do |
+|---|---|
+| A video fails, or "it stopped working" | Go to **Settings → Update yt-dlp**. YouTube and Facebook change often, and updating fixes most problems. Vidstash also updates itself each time you start it. |
+| "Sign in to confirm you're not a bot", or members-only and age-restricted videos | In **Options → Browser cookies**, pick the browser where you're logged in to YouTube. |
+| The tablet can't open the address | Make sure both are on the same Wi-Fi, and that you started Vidstash with `./app.sh --host 0.0.0.0`. Your Mac's address can change, so check it again with `ipconfig getifaddr en0`. |
+| Some quality options are missing | Check **Settings**. Every item should have a green tick. A missing *JavaScript runtime* is fixed with `brew install node`. |
+
+---
+
+## Please download responsibly
+
+Only download videos you have the right to: your own channels and pages, or with the owner's permission. Respect YouTube's and Facebook's terms of service and copyright law.
+
+---
+
+<details>
+<summary><b>Terminal usage</b></summary>
+
+Everything also works from the terminal:
 
 ```bash
 ./fbreels.sh "https://www.youtube.com/@channel"
@@ -70,26 +179,19 @@ Everything in the app also works from the terminal:
 
 Always wrap links in quotes, because `?` and `&` mean something to your shell.
 
-## Staying up to date
+Start options for the app: `./app.sh --no-update` skips the yt-dlp update check, `--port 9000` uses another port, and `--no-browser` doesn't open the browser.
 
-YouTube and Facebook change their sites often, and `yt-dlp` usually ships a fix within days. So:
+</details>
 
-- **Every launch** of `./app.sh` updates `yt-dlp` first. Use `./app.sh --no-update` to skip it.
-- **Settings → Update yt-dlp / Update everything** updates from inside the app, then **Restart now** reloads it.
-- **On GitHub**, the workflows in `.github/` keep the project itself current:
-  - **Dependabot** (`dependabot.yml`) opens pull requests for new releases of every Python dependency (checked daily, so yt-dlp fixes arrive fast) and every GitHub Action (weekly).
-  - **CI** (`ci.yml`) runs lint, unit and API tests, plus an app-startup check, on Linux and macOS for every push and pull request.
-  - **Auto-merge** (`dependabot-automerge.yml`) merges Dependabot pull requests automatically once CI passes. Major version bumps wait for you.
-  - **Canary** (`canary.yml`) runs daily. It installs the newest release of everything, runs the tests plus a real YouTube download, and opens an issue if something broke.
-
-  To enable auto-merge after pushing: **Settings → General → Allow auto-merge**, then add a branch protection rule on `main` that requires the CI checks.
-
-## Development
+<details>
+<summary><b>For developers</b></summary>
 
 ```bash
+git clone https://github.com/hossameldinmohamed/VideoDownloader.git && cd VideoDownloader
+./app.sh                           # first run sets up .venv, yt-dlp, Chromium and ffmpeg
 source .venv/bin/activate
 pip install -r requirements-dev.txt
-pytest -q                     # unit + API tests
+pytest -q                          # unit + API tests
 LIVE=1 pytest tests/test_live.py   # real YouTube download
 ruff check fbreels tests
 python -m fbreels.web --port 8787  # run the server directly
@@ -98,35 +200,17 @@ python -m fbreels.web --port 8787  # run the server directly
 | Path | What's there |
 |---|---|
 | `fbreels/resolver.py` | Turns links, handles and names into a target |
-| `fbreels/engine.py` | Scanning, numbering, yt-dlp options, MP4 conversion, parallel downloads |
+| `fbreels/engine.py` | Scanning, numbering, yt-dlp options, MP4 conversion, parallel downloads, streaming to a device |
 | `fbreels/scraper.py` | Facebook Reels scanning with Playwright |
 | `fbreels/jobs.py` | Background job queue, history, cancel and retry |
 | `fbreels/web.py` | FastAPI server and API |
 | `fbreels/static/` | The web UI (plain HTML/CSS/JS, no build step) |
 | `fbreels/cli.py` | Terminal interface |
 
-The server listens on `127.0.0.1` only. It rejects requests addressed to any other host name, which blocks DNS rebinding, and every write request needs a custom header, which blocks other websites from triggering downloads.
+**Security:** by default the server listens on `127.0.0.1` only. It rejects requests addressed to any other host name, which blocks DNS rebinding, and every write request needs a custom header, which blocks other websites from triggering downloads. `--host 0.0.0.0` turns the host check off so other devices on your network can connect.
 
-## Why not Vercel?
+**Keeping current:** the workflows in `.github/` keep the project up to date. Dependabot opens daily pull requests for Python dependencies (so yt-dlp fixes arrive fast) and weekly ones for Actions. CI runs lint, tests and a startup check on Linux and macOS. Dependabot pull requests auto-merge once CI passes, except major version bumps. A daily canary installs the newest release of everything, runs a real YouTube download, and opens an issue if something broke. To enable auto-merge: **Settings → General → Allow auto-merge**, plus a branch protection rule on `main` that requires the CI checks.
 
-Vercel runs code as short-lived serverless functions. They time out after minutes, have no ffmpeg or persistent disk, and can't open the browser window the Facebook login needs. Worse, YouTube blocks downloads from cloud-server IP addresses. Vidstash is built to run on your own machine, where downloads are fast, stay private, and don't get blocked.
+**Why not host it online (e.g. Vercel)?** Serverless functions time out after minutes, have no ffmpeg or disk, and can't open the Facebook login window. And YouTube blocks downloads from cloud-server IP addresses. Vidstash runs on your own machine, where downloads are fast, private, and don't get blocked.
 
-## Legal
-
-Only download content you have the right to: your own channels and pages, or with the owner's permission. Respect YouTube's and Facebook's terms of service and copyright law.
-
-## Use it from another device
-
-Keep Vidstash running on one computer at home and use it from anywhere with [Tailscale](https://tailscale.com) (free, private to your devices):
-
-1. Install Tailscale on the home computer and on each device you'll use, and sign in on all of them.
-2. On the home computer, start the app and give it an HTTPS address on your tailnet:
-   ```bash
-   tailscale serve --bg 8787
-   ./app.sh --no-browser --allow-host <computer-name>.<tailnet>.ts.net
-   ```
-3. On any of your devices, open `https://<computer-name>.<tailnet>.ts.net`.
-
-Under **Options** (or right above the video list), turn on **Copy to this device**. The first time you press **Download**, Chrome and Edge ask you to pick a folder on that device. After that, each video is copied into it, in the same channel folders, as soon as it finishes. The folder is remembered for next time. Pick a folder *inside* Downloads (e.g. a new `Vidstash` folder), because browsers won't let websites use Downloads, Desktop or your home folder itself. Safari and Firefox put the videos in the normal Downloads folder instead. Keep the tab open until the copies finish. The home computer keeps its own copy too.
-
-When you open Vidstash on the same computer it runs on (`http://127.0.0.1:8787`), this switch isn't shown: videos already save straight into your **Save to** folder.
+</details>

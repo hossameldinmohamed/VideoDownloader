@@ -15,16 +15,19 @@ import urllib.request
 import uuid
 import webbrowser
 from pathlib import Path
+from urllib.parse import quote
 
 import yt_dlp
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.background import BackgroundTask
 
 from . import __version__, engine
 from .config import PROJECT_DIR, load_settings, normalize_options, save_settings
-from .jobs import JobManager
+from .jobs import JobManager, JobReporter
 from .resolver import ResolveError, Target, resolve
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -92,6 +95,7 @@ class JobIn(BaseModel):
     output_dir: str | None = None
     lookup_id: str | None = None
     selections: dict[str, list[str]] | None = None  # {tab/playlist key: [video keys]}
+    direct: bool = False  # send each video straight to the device asking, keep nothing here
 
 
 class PathIn(BaseModel):
@@ -220,6 +224,8 @@ def api_create_jobs(body: JobIn):
     m = get_manager()
     out_dir = _output_dir(body.output_dir)
     options = normalize_options(body.options)
+    if body.direct:
+        options["direct"] = True
     created = []
     if body.lookup_id:
         lk = _get_lookup(body.lookup_id)["lk"]
@@ -256,9 +262,7 @@ def api_job(job_id: str):
         return job.to_dict(items="all")
 
 
-@app.get("/api/jobs/{job_id}/file")
-def api_job_file(job_id: str, key: str):
-    """Stream one finished video so the browser can save it on the device it runs on."""
+def _finished_file(job_id: str, key: str) -> Path:
     job = get_manager().get(job_id)
     item = next((i for i in job.items if i["key"] == key), None) if job else None
     if not item or item["status"] != "done" or not item.get("file"):
@@ -267,12 +271,99 @@ def api_job_file(job_id: str, key: str):
     root = Path(job.output_dir).resolve()
     if root not in p.parents or not p.is_file():
         raise HTTPException(404, {"message": "That file isn't there anymore."})
+    return p
+
+
+@app.get("/api/jobs/{job_id}/file")
+def api_job_file(job_id: str, key: str):
+    """Stream one finished video so the browser can save it on the device it runs on."""
+    p = _finished_file(job_id, key)
     return FileResponse(p, filename=p.name)
+
+
+@app.get("/api/jobs/{job_id}/direct")
+def api_job_direct(job_id: str, watch: str = ""):
+    """For "this device only": which videos the device should fetch next, and how the ones it's on are doing."""
+    job = get_manager().get(job_id)
+    if not job or not job.direct:
+        raise HTTPException(404, {"message": "No such job."})
+    return get_manager().direct_queue(job, {k for k in watch.split(",") if k})
+
+
+@app.get("/api/jobs/{job_id}/stream")
+async def api_job_stream(job_id: str, key: str):
+    """Fetch one video and pass it straight to this device as it arrives — nothing is saved on this computer."""
+    m = get_manager()
+    job = m.get(job_id)
+    item = m.claim_direct(job, key) if job else None
+    if not item:
+        raise HTTPException(409, {"message": "That video isn't waiting to be sent."})
+    reporter = JobReporter(m, job)
+    stream = engine.DirectStream(item, job.options, lambda: reporter.cancelled(item))
+    try:
+        await run_in_threadpool(stream.open)
+    except Exception as e:
+        stream.close()
+        reporter.update(item, status="failed", phase="", error=engine.clean_error(e))
+        raise HTTPException(422, {"message": engine.clean_error(e)}) from None
+
+    state = {"sent": 0, "ok": False, "error": None, "finished": False}
+    finish_lock = threading.Lock()
+
+    def finish():
+        with finish_lock:
+            if state["finished"]:
+                return
+            state["finished"] = True
+        stream.close()
+        if state["ok"]:
+            engine.mark_downloaded(item)
+            reporter.update(item, status="done", phase="", progress=1.0, speed=None, eta=None,
+                            file=stream.name, size=state["sent"])
+        elif reporter.cancelled(item):
+            reporter.update(item, status="cancelled", phase="", speed=None, eta=None)
+        else:
+            reporter.update(item, status="failed", phase="", speed=None, eta=None,
+                            error=state["error"] or "The device stopped receiving it before it finished.")
+
+    async def body():
+        started = last = time.time()
+        try:
+            while chunk := await run_in_threadpool(stream.read):
+                state["sent"] += len(chunk)
+                now = job.touched = time.time()
+                if now - last > 0.5:
+                    last = now
+                    speed = state["sent"] / max(now - started, 0.001)
+                    total = stream.size or stream.expected
+                    reporter.update(item, progress=min(0.99, state["sent"] / total) if total else 0.0, speed=speed,
+                                    eta=(total - state["sent"]) / speed if total and speed else None)
+                yield chunk
+            state["ok"] = True  # only reached once the last chunk went out
+        except engine.Cancelled:
+            pass
+        except Exception as e:
+            state["error"] = engine.clean_error(e)
+        finally:
+            threading.Thread(target=finish, daemon=True).start()
+
+    types = {"mp3": "audio/mpeg", "m4a": "audio/mp4"}
+    headers = {"Content-Disposition": f"attachment; filename*=utf-8''{quote(stream.name)}", "Cache-Control": "no-store"}
+    if stream.size:
+        headers["Content-Length"] = str(stream.size)
+    # if the browser hangs up, the body never finishes; this still runs afterwards
+    return StreamingResponse(body(), media_type=types.get(engine.direct_ext(job.options), "video/mp4"),
+                             headers=headers, background=BackgroundTask(finish))
 
 
 @app.post("/api/jobs/{job_id}/cancel")
 def api_cancel(job_id: str):
     return {"ok": get_manager().cancel(job_id)}
+
+
+@app.post("/api/jobs/{job_id}/items/cancel")
+def api_cancel_item(job_id: str, key: str):
+    return {"ok": get_manager().cancel_item(job_id, key)}
 
 
 @app.post("/api/jobs/{job_id}/retry")
