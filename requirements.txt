@@ -1,4 +1,4 @@
 yt-dlp[default]>=2026.8.19
 playwright>=1.64.0
-fastapi>=0.143.3
+fastapi>=0.146.0
 uvicorn[standard]>=0.54
