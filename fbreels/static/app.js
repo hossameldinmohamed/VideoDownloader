@@ -340,17 +340,159 @@ const detect = debounce(async () => {
   }
 }, 250);
 
-inputEl.addEventListener("input", () => { autoGrow(); updateFindButton(); detect(); });
+function onInputChanged() {
+  autoGrow(); updateFindButton(); detect();
+  $("#btn-clear").hidden = !inputEl.value;
+}
+
+inputEl.addEventListener("input", () => { onInputChanged(); showSuggestions(); });
+inputEl.addEventListener("click", showSuggestions);
 inputEl.addEventListener("keydown", (e) => {
+  if (suggestKeydown(e)) return;
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); onFind(); }
 });
 $("#find-form").addEventListener("submit", (e) => { e.preventDefault(); onFind(); });
+
+$("#btn-clear").addEventListener("click", () => {
+  inputEl.value = "";
+  onInputChanged();
+  inputEl.focus();
+  showSuggestions();
+});
+
+/* ---------------------------------------------------------------- recent suggestions */
+
+const suggest = { all: [], shown: [], active: -1 };
+const suggestEl = $("#suggest");
+
+async function loadRecent() {
+  try { suggest.all = (await api("GET", "/api/recent")).recent; } catch { /* suggestions are optional */ }
+}
+
+/** The line the caret is on: suggestions complete that line, so several links still work. */
+function caretLine() {
+  const v = inputEl.value, pos = inputEl.selectionStart ?? v.length;
+  const start = v.lastIndexOf("\n", pos - 1) + 1;
+  const nl = v.indexOf("\n", pos);
+  const end = nl === -1 ? v.length : nl;
+  return { start, end, text: v.slice(start, end).trim() };
+}
+
+const bareUrl = (u) => (u || "").replace(/^https?:\/\/(www\.|m\.)?/i, "").replace(/\/$/, "");
+
+function matchRecent(q) {
+  q = q.toLowerCase();
+  if (!q) return suggest.all.slice(0, 8);
+  const scored = [];
+  for (const r of suggest.all) {
+    const fields = [r.title, r.input, bareUrl(r.url)].map((s) => (s || "").toLowerCase());
+    if (fields.some((f) => f === q) || r.url.toLowerCase() === q) continue; // already typed in full
+    let score = 3;
+    for (const f of fields) {
+      if (f.startsWith(q) || f.startsWith(`@${q}`)) score = Math.min(score, 0);
+      else if (f.split(/[\s/@._-]+/).some((w) => w.startsWith(q))) score = Math.min(score, 1);
+      else if (f.includes(q)) score = Math.min(score, 2);
+    }
+    if (score < 3) scored.push([score, r]);
+  }
+  return scored.sort((a, b) => a[0] - b[0]).slice(0, 8).map(([, r]) => r);
+}
+
+function highlight(text, q) {
+  const i = q ? text.toLowerCase().indexOf(q.toLowerCase()) : -1;
+  if (i < 0) return esc(text);
+  return `${esc(text.slice(0, i))}<mark>${esc(text.slice(i, i + q.length))}</mark>${esc(text.slice(i + q.length))}`;
+}
+
+function hideSuggestions() {
+  suggestEl.hidden = true;
+  suggest.active = -1;
+  inputEl.setAttribute("aria-expanded", "false");
+  inputEl.removeAttribute("aria-activedescendant");
+}
+
+function showSuggestions() {
+  const q = caretLine().text;
+  suggest.shown = matchRecent(q);
+  suggest.active = -1;
+  if (!suggest.shown.length) return hideSuggestions();
+  const head = q ? "" : `<div class="suggest-head">Recent</div>`;
+  suggestEl.innerHTML = head + suggest.shown.map((r, i) => {
+    const pic = r.avatar
+      ? `<img src="${esc(r.avatar)}" alt="" referrerpolicy="no-referrer">`
+      : `<span class="ph"><span class="pdot ${r.platform === "youtube" ? "yt" : "fb"}"></span></span>`;
+    const sub = `${PLATFORM_NAME[r.platform] || ""} ${KIND_NAME[r.kind] || ""} · ${bareUrl(r.url)}`;
+    return `<div class="suggest-item" role="option" id="sg-${i}" data-i="${i}">
+      ${pic}
+      <span class="suggest-text"><span class="suggest-title">${highlight(r.title || r.input, q)}</span>
+      <span class="suggest-sub">${highlight(sub, q)}</span></span>
+      <button class="icon-btn" type="button" data-forget="${i}" aria-label="Remove from recent" title="Remove from recent">${ICON.x}</button>
+    </div>`;
+  }).join("");
+  suggestEl.hidden = false;
+  inputEl.setAttribute("aria-expanded", "true");
+}
+
+function setActive(i) {
+  const n = suggest.shown.length;
+  suggest.active = (i + n) % n;
+  $$(".suggest-item", suggestEl).forEach((el, k) => el.classList.toggle("active", k === suggest.active));
+  const el = $(`#sg-${suggest.active}`);
+  el.scrollIntoView({ block: "nearest" });
+  inputEl.setAttribute("aria-activedescendant", el.id);
+}
+
+function pickSuggestion(i) {
+  const r = suggest.shown[i];
+  if (!r) return;
+  const { start, end } = caretLine();
+  const v = inputEl.value;
+  inputEl.value = v.slice(0, start) + r.url + v.slice(end);
+  const caret = start + r.url.length;
+  inputEl.setSelectionRange(caret, caret);
+  hideSuggestions();
+  if (r.platform && state.platform !== "auto" && state.platform !== r.platform) {
+    state.platform = r.platform;
+    setPlatform(r.platform);
+  }
+  onInputChanged();
+  if (inputLines().length === 1) onFind();
+}
+
+/** Arrow keys, Enter and Escape while the list is open. Returns true when handled. */
+function suggestKeydown(e) {
+  if (suggestEl.hidden || e.isComposing) return false;
+  if (e.key === "ArrowDown") { e.preventDefault(); setActive(suggest.active + 1); return true; }
+  if (e.key === "ArrowUp") { e.preventDefault(); setActive(suggest.active - 1); return true; }
+  if (e.key === "Escape") { e.preventDefault(); hideSuggestions(); return true; }
+  if (e.key === "Enter" && !e.shiftKey && suggest.active >= 0) { e.preventDefault(); pickSuggestion(suggest.active); return true; }
+  if (e.key === "Enter") hideSuggestions();
+  return false;
+}
+
+// pointerdown + preventDefault keeps focus in the input (and the keyboard up on tablets).
+suggestEl.addEventListener("pointerdown", (e) => e.preventDefault());
+suggestEl.addEventListener("click", async (e) => {
+  const forget = e.target.closest("[data-forget]");
+  if (forget) {
+    const r = suggest.shown[+forget.dataset.forget];
+    suggest.all = suggest.all.filter((x) => x.url !== r.url);
+    showSuggestions();
+    try { await api("DELETE", `/api/recent?url=${encodeURIComponent(r.url)}`); } catch (err) { toast(err.message, "err"); }
+    return;
+  }
+  const item = e.target.closest(".suggest-item");
+  if (item) pickSuggestion(+item.dataset.i);
+});
+document.addEventListener("pointerdown", (e) => {
+  if (!e.target.closest("#find-form")) hideSuggestions();
+});
 
 const setPlatform = segmented($("#platform"), "auto", (v) => { state.platform = v; detect(); });
 
 $$("[data-example]").forEach((b) => b.addEventListener("click", () => {
   inputEl.value = b.dataset.example;
-  autoGrow(); detect(); onFind();
+  onInputChanged(); onFind();
 }));
 
 function showAmbiguous(message, action) {
@@ -394,7 +536,8 @@ async function downloadMany(inputs) {
     trackDevice(r.jobs);
     toast(`Queued ${r.jobs.length} downloads.`, "ok");
     inputEl.value = "";
-    autoGrow(); detect();
+    onInputChanged();
+    loadRecent();
     maybeAskNotify();
     pollNow();
   } catch (e) {
@@ -423,6 +566,7 @@ async function openLookup(input) {
       view: null, search: "", sort: "newest", list: [], shown: 0, autoPicked: false, loading: new Set(),
       info: new Map(), extra: new Map(), detailQueue: [], detailBusy: 0,
     };
+    loadRecent();
     renderPickerHead();
     $("#picker").hidden = false;
     renderFooter();
@@ -1656,6 +1800,7 @@ $("#set-notify").addEventListener("change", (e) => {
   }
   $("#set-notify").checked = store.get("notify", true);
   await restoreDevice();
+  loadRecent();
   applyOptionsToControls();
   autoGrow();
   showView(store.get("view", "download"));

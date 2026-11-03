@@ -45,8 +45,13 @@
       <div class="card input-card">
         <form class="input-wrap" id="find-form" autocomplete="off">
           <span class="platform-chip" id="detect-chip" hidden></span>
-          <textarea id="input" rows="1" spellcheck="false"
+          <textarea id="input" rows="1" spellcheck="false" role="combobox" aria-autocomplete="list"
+            aria-controls="suggest" aria-expanded="false"
             placeholder="https://www.youtube.com/@channel   ·   facebook.com/page   ·   @handle"></textarea>
+          <button class="icon-btn clear-btn" id="btn-clear" type="button" aria-label="Clear" title="Clear" hidden>
+            <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg>
+          </button>
+          <div class="suggest" id="suggest" role="listbox" aria-label="Recent pages" hidden></div>
           <button class="btn primary" id="btn-find" type="submit">
             <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
             <span id="btn-find-label">Find videos</span>

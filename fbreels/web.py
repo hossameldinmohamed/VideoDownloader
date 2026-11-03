@@ -25,7 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-from . import __version__, engine
+from . import __version__, engine, recent
 from .config import PROJECT_DIR, load_settings, normalize_options, save_settings
 from .jobs import JobManager, JobReporter
 from .resolver import ResolveError, Target, resolve
@@ -172,6 +172,7 @@ def api_lookup(body: LookupIn):
         lk = engine.lookup(target, options)
     except Exception as e:
         raise HTTPException(422, {"message": engine.clean_error(e)}) from None
+    recent.remember(body.input, lk["platform"], lk["kind"], target.url, lk.get("title"), lk.get("avatar"))
     return _public_lookup(_remember_lookup(lk), lk)
 
 
@@ -244,6 +245,7 @@ def api_create_jobs(body: JobIn):
         targets = [(text, _resolve_or_400(text, body.platform)) for text in inputs]
         for text, target in targets:
             created.append(m.create(text, target, options, out_dir))
+            recent.remember(text, target.platform, target.kind, target.url, target.label)
     return {"jobs": [j.to_dict() for j in created]}
 
 
@@ -380,6 +382,16 @@ def api_remove(job_id: str):
 def api_clear():
     get_manager().clear_finished()
     return {"ok": True}
+
+
+@app.get("/api/recent")
+def api_recent():
+    return {"recent": recent.load()}
+
+
+@app.delete("/api/recent")
+def api_forget_recent(url: str):
+    return {"ok": recent.forget(url)}
 
 
 # --------------------------------------------------------------------------

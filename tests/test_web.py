@@ -1,3 +1,4 @@
+import json
 import os
 import time
 
@@ -312,3 +313,39 @@ def test_cancel_one_video_keeps_the_rest_going(client, monkeypatch):
     status = {i["key"]: i["status"] for i in job["items"]}
     assert status == {"v0": "cancelled", "v1": "done", "v2": "cancelled"}
     assert job["status"] == "done" and "2 cancelled by you" in job["message"]
+
+
+def test_recent_remembers_lookups_and_bulk_downloads(client, monkeypatch):
+    def fake_lookup(target, options):
+        return {"platform": "youtube", "kind": "channel", "url": target.url, "title": "NASA", "avatar": "a.jpg",
+                "tabs": [], "default_tab": None, "folder": None, "groups": {}, "target": target.to_dict()}
+
+    monkeypatch.setattr(engine, "lookup", fake_lookup)
+    monkeypatch.setattr(web.JobManager, "create", lambda self, *a, **k: type("J", (), {"to_dict": lambda s: {}})())
+    assert client.get("/api/recent").json() == {"recent": []}
+
+    assert client.post("/api/lookup", json={"input": "https://www.youtube.com/@NASA"}, headers=H).status_code == 200
+    client.post("/api/jobs", json={"inputs": ["https://www.youtube.com/@LofiGirl"]}, headers=H)
+    client.post("/api/lookup", json={"input": "https://www.youtube.com/@NASA"}, headers=H)
+
+    recent = client.get("/api/recent").json()["recent"]
+    assert [r["title"] for r in recent] == ["NASA", "@LofiGirl"]  # newest first, one entry per page
+    assert recent[0]["avatar"] == "a.jpg" and recent[0]["url"].endswith("/@NASA")
+
+    r = client.delete("/api/recent", params={"url": recent[0]["url"]}, headers=H)
+    assert r.json() == {"ok": True}
+    assert [r["title"] for r in client.get("/api/recent").json()["recent"]] == ["@LofiGirl"]
+
+
+def test_recent_starts_from_job_history(client, isolated_state):
+    state = isolated_state / "state"
+    state.mkdir()
+    (state / "jobs.json").write_text(json.dumps([
+        {"input": "@old", "title": "Old", "platform": "youtube", "kind": "channel", "created": 1,
+         "target": {"url": "https://www.youtube.com/@old"}},
+        {"input": "@new", "title": "New", "platform": "youtube", "kind": "channel", "created": 2,
+         "target": {"url": "https://www.youtube.com/@new"}},
+        {"input": "@new", "title": "New", "platform": "youtube", "kind": "channel", "created": 0,
+         "target": {"url": "https://www.youtube.com/@new"}},
+    ]))
+    assert [r["title"] for r in client.get("/api/recent").json()["recent"]] == ["New", "Old"]
