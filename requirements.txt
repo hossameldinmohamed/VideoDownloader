@@ -1,4 +1,4 @@
-yt-dlp[default]>=2026.10.26
+yt-dlp[default]>=2026.11.23
 playwright>=1.65.2
 fastapi>=0.165.0
 uvicorn[standard]>=0.54
